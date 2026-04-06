@@ -34,7 +34,7 @@ from src.data.market_data import load_all_data
 from src.data.fundamental_data import get_fundamentals_bulk, compute_fundamental_quality
 from src.pipeline.exposure_mapping import get_latest_betas, ExposureMap
 from src.pipeline.fundamental_adjustment import adjust_exposure_map
-from src.pipeline.noise_cleaner import compute_residuals, cumulative_residual
+from src.pipeline.noise_cleaner import compute_residuals, cumulative_residual, residual_volatility
 from src.pipeline.shock_detector import get_active_shocks, shocks_to_dataframe
 from src.pipeline.alpha_calculator import generate_alpha_signals, signals_to_dataframe
 from src.pipeline.alpha_filter import filter_signals
@@ -300,6 +300,10 @@ class LoneStarStrategy:
         # Cumulative residual over the shock window (last shock_lookback days capped at 10)
         n_residual_days = min(shock_cfg.get("max_age_days", 5), 10)
         cum_residuals = cumulative_residual(residuals_df, n_days=n_residual_days)
+
+        # Annualised idiosyncratic vol per ticker (used for CML sizing in Step 7)
+        resid_vol_map = residual_volatility(residuals_df, window=63).to_dict()
+
         if verbose:
             self._done(len(cum_residuals))
 
@@ -360,6 +364,7 @@ class LoneStarStrategy:
             cfg_scoring=scoring_cfg,
             cfg_risk=risk_cfg,
             cfg_shock=shock_cfg,
+            residual_vol_map=resid_vol_map,
             top_n=output_cfg.get("top_n_signals", 10),
         )
         result.scored_signals = scored

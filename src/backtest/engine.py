@@ -355,8 +355,37 @@ def run_backtest(
 
                     direction = "LONG" if alpha > 0 else "SHORT"
 
-                    # Size proportional to |alpha| / max_alpha, capped at max_pos
-                    size = float(np.clip(abs(alpha) / max_alpha * max_pos, 0.005, max_pos))
+                    # ── CML + risk-parity sizing ─────────────────────────────
+                    # σ_résiduel: rolling 63-day std of CAPM residuals (annualised)
+                    resid_s = residuals.get(ticker)
+                    if resid_s is not None:
+                        recent_r = resid_s.loc[:t].iloc[-63:]
+                        sigma_annual = float(recent_r.std() * np.sqrt(252)) if len(recent_r) > 5 else 0.25
+                    else:
+                        sigma_annual = 0.25  # 25% default if no data
+
+                    sigma_annual = max(sigma_annual, 0.05)  # floor at 5%
+
+                    # σ over holding period
+                    sigma_hold = sigma_annual * np.sqrt(max_age / 252)
+                    sigma_hold = max(sigma_hold, 1e-4)
+
+                    # Sharpe of the signal
+                    sharpe_signal = abs(alpha) / sigma_hold
+
+                    # Base size: target 1% annual idiosyncratic risk per position
+                    target_risk = risk_cfg.get("target_position_risk_pct", 0.01)
+                    base_size = float(np.clip(target_risk / sigma_annual, 0.0, max_pos))
+
+                    # CML boost: signal quality vs reference SR
+                    ref_sr   = risk_cfg.get("reference_sharpe", 0.50)
+                    max_boost = risk_cfg.get("max_signal_boost", 2.0)
+                    boost = float(np.clip(sharpe_signal / ref_sr, 0.0, max_boost))
+
+                    # Shock quality score [0, 1] as composite gate
+                    gate = float(np.clip(shock_score, 0.0, 1.0))
+
+                    size = float(np.clip(base_size * boost * gate, 0.005, max_pos))
 
                     if t not in stock_prices.index or ticker not in stock_prices.columns:
                         continue

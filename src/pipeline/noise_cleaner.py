@@ -204,3 +204,26 @@ def cumulative_residual(
     recent = get_recent_residuals(residuals_df, n_days)
     # Compound returns: (1+r1)(1+r2)...-1 approximated as sum for small returns
     return recent.sum()
+
+
+def residual_volatility(
+    residuals_df: pd.DataFrame,
+    window: int = 63,
+) -> pd.Series:
+    """
+    Annualised idiosyncratic volatility per ticker from CAPM residuals.
+
+    This is σ_résiduel used in the CML+Kelly position sizing:
+        sigma_annual = std(daily_residuals, window) × √252
+
+    Uses only the last `window` trading days for a recent estimate.
+
+    Returns:
+        Series indexed by ticker, values = annualised vol (decimal, e.g. 0.25)
+    """
+    if residuals_df.empty:
+        return pd.Series(dtype=float, name="residual_vol_annual")
+
+    recent = residuals_df.iloc[-window:] if len(residuals_df) >= window else residuals_df
+    daily_std = recent.std()
+    return (daily_std * np.sqrt(252)).rename("residual_vol_annual")

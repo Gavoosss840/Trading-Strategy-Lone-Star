@@ -1,27 +1,41 @@
 """
 Step 7 — Final Scoring
 ─────────────────────────
-Computes a composite trade score for each filtered signal:
+Computes a composite trade score for each filtered signal, then derives
+position size via the CML + Risk Parity framework.
 
+── Composite score ────────────────────────────────────────────────────────
     Score = w_α × α_score
           + w_shock × shock_score
           + w_lev × leverage_quality
           + w_mar × margin_quality
           + w_tim × timing_score
 
-Each component is normalised to [0, 1].
-The final score drives position sizing and signal ranking.
+── Position sizing (CML + inverse-vol) ────────────────────────────────────
+    σ_hold    = σ_résiduel_annual × √(holding_days / 252)
+    SR_signal = |alpha| / σ_hold
+    base_size = target_risk / σ_résiduel_annual    ← risk-parity baseline
+    boost     = min(SR_signal / SR_ref, max_boost)  ← CML quality lift
+    w         = base_size × boost × composite_score
+    w         = clip(w, min_pos, max_pos)
+
+Economic interpretation:
+  - base_size : inverse-vol allocation — each position targets the same
+                idiosyncratic risk contribution (risk parity)
+  - boost     : multiplier when the trade's SR exceeds a reference SR,
+                positioning the portfolio on the Capital Market Line
+  - score     : quality gate from the 7-step pipeline
 
 Score interpretation:
-  ≥ 0.70  → Strong signal (full position)
-  0.50–0.70 → Moderate signal (half position)
-  0.30–0.50 → Weak signal (quarter position, monitor only)
+  ≥ 0.70  → Strong    (full boost applied)
+  0.50–0.70 → Moderate
+  0.30–0.50 → Weak
   < 0.30  → Discard
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -31,7 +45,6 @@ from src.pipeline.alpha_calculator import AlphaSignal
 from src.data.fundamental_data import (
     leverage_quality_score,
     margin_quality_score,
-    coverage_quality_score,
 )
 
 
@@ -41,19 +54,23 @@ from src.data.fundamental_data import (
 class ScoredSignal:
     signal: AlphaSignal
 
-    # Component scores
+    # Component scores [0, 1]
     alpha_score: float
     shock_score: float
     leverage_score: float
     margin_score: float
     timing_score: float
 
-    # Composite
+    # Composite pipeline score
     total_score: float
+    signal_strength: str        # "strong" | "moderate" | "weak" | "discard"
 
-    # Position guidance
-    position_size_pct: float   # Recommended % of portfolio (0–5%)
-    signal_strength: str       # "strong" | "moderate" | "weak" | "discard"
+    # CML + risk-parity sizing breakdown
+    residual_vol_annual: float  # σ_résiduel (annualised)
+    sharpe_signal: float        # SR of the trade over the holding period
+    base_size: float            # inverse-vol allocation (risk parity baseline)
+    size_boost: float           # CML quality multiplier
+    position_size_pct: float    # Final recommended position (fraction of portfolio)
 
     @property
     def ticker(self) -> str:
@@ -75,43 +92,91 @@ class ScoredSignal:
         return (
             f"ScoredSignal({self.ticker} | {self.direction} | "
             f"score={self.total_score:.3f} [{self.signal_strength}] | "
-            f"α={self.alpha:.3%} | size={self.position_size_pct:.1%})"
+            f"α={self.alpha:.3%} | SR={self.sharpe_signal:.2f} | "
+            f"size={self.position_size_pct:.1%})"
         )
 
 
-# ── Component score normalisation ─────────────────────────────────────────────
+# ── CML + Risk Parity position sizing ────────────────────────────────────────
+
+def cml_position_size(
+    alpha: float,
+    residual_vol_annual: float,
+    composite_score: float,
+    holding_days: int = 5,
+    target_risk: float = 0.01,
+    reference_sharpe: float = 0.50,
+    max_boost: float = 2.0,
+    max_pos: float = 0.05,
+    min_pos: float = 0.005,
+) -> Dict[str, float]:
+    """
+    CML-informed inverse-vol position sizing.
+
+    Args:
+        alpha               : Expected residual return over holding period (decimal)
+        residual_vol_annual : Annualised CAPM-residual volatility of the stock
+        composite_score     : Pipeline quality score [0, 1]
+        holding_days        : Expected holding period (days)
+        target_risk         : Target idiosyncratic risk per position (annual, decimal)
+                              e.g. 0.01 = 1% annual vol contribution
+        reference_sharpe    : Reference SR — positions with SR > this get a boost
+        max_boost           : Cap on the signal quality multiplier
+        max_pos             : Hard maximum position size
+        min_pos             : Hard minimum position size
+
+    Returns:
+        Dict with sizing breakdown for transparency.
+    """
+    fallback = {
+        "position_size_pct": float(np.clip(composite_score * max_pos, min_pos, max_pos)),
+        "base_size": max_pos,
+        "size_boost": 1.0,
+        "sharpe_signal": 0.0,
+        "residual_vol_annual": residual_vol_annual,
+    }
+
+    if residual_vol_annual <= 0 or np.isnan(residual_vol_annual):
+        return fallback
+
+    # σ over the holding period
+    sigma_hold = residual_vol_annual * np.sqrt(max(holding_days, 1) / 252)
+    sigma_hold = max(sigma_hold, 1e-4)
+
+    # Sharpe of the signal over the holding period
+    sharpe_signal = abs(alpha) / sigma_hold
+
+    # Base allocation: inverse-vol (risk parity baseline)
+    # Each position contributes `target_risk` of annualised idiosyncratic vol
+    base_size = target_risk / residual_vol_annual
+    base_size = float(np.clip(base_size, 0.0, max_pos))
+
+    # CML boost: scale up when signal SR > reference SR
+    boost = float(np.clip(sharpe_signal / reference_sharpe, 0.0, max_boost))
+
+    # Final: risk-parity × signal quality × pipeline score
+    w = base_size * boost * composite_score
+    w = float(np.clip(w, min_pos, max_pos))
+
+    return {
+        "position_size_pct": w,
+        "base_size": base_size,
+        "size_boost": boost,
+        "sharpe_signal": sharpe_signal,
+        "residual_vol_annual": residual_vol_annual,
+    }
+
+
+# ── Score component helpers ───────────────────────────────────────────────────
 
 def _alpha_score(alpha: float, reference_alpha: float = 0.03) -> float:
-    """
-    Normalise alpha to [0, 1].
-    reference_alpha = 3% is treated as a "full score" alpha.
-    """
     return float(np.clip(abs(alpha) / reference_alpha, 0.0, 1.0))
 
 
 def _timing_score(shock_age_days: int, max_age: int = 5) -> float:
-    """
-    Timing score decays with shock age.
-    Age 0 = 1.0 (today's shock), age max_age = 0.1
-    """
     if shock_age_days >= max_age:
         return 0.1
     return float(1.0 - (shock_age_days / max_age) * 0.9)
-
-
-def _position_size(
-    score: float,
-    max_position_pct: float = 0.05,
-    min_score: float = 0.30,
-) -> float:
-    """
-    Map score to position size.
-    Linear scaling from 0% at min_score to max_position_pct at 1.0.
-    """
-    if score < min_score:
-        return 0.0
-    size_ratio = (score - min_score) / (1.0 - min_score)
-    return float(np.clip(size_ratio * max_position_pct, 0.0, max_position_pct))
 
 
 def _signal_strength(score: float) -> str:
@@ -132,28 +197,36 @@ def score_signal(
     cfg_scoring: Dict,
     cfg_risk: Dict,
     cfg_shock: Optional[Dict] = None,
+    residual_vol_annual: float = 0.0,
 ) -> ScoredSignal:
     """
-    Compute composite score for a single alpha signal.
+    Compute composite score and CML-informed position size for one signal.
 
     Args:
-        signal        : AlphaSignal from Step 5
-        fundamentals  : Dict with debt_to_equity, operating_margin,
-                        interest_coverage for signal.ticker
-        cfg_scoring   : scoring section from config
-        cfg_risk      : risk section from config
-        cfg_shock     : shock section from config (for max_age)
+        signal               : AlphaSignal from Step 5
+        fundamentals         : Dict with debt_to_equity, operating_margin for ticker
+        cfg_scoring          : scoring section from config
+        cfg_risk             : risk section from config
+        cfg_shock            : shock section from config (for max_age, holding_days)
+        residual_vol_annual  : Annualised CAPM-residual vol (from noise_cleaner)
     """
     w_alpha = cfg_scoring.get("alpha_weight", 0.40)
     w_shock = cfg_scoring.get("shock_weight", 0.20)
-    w_lev = cfg_scoring.get("leverage_quality_weight", 0.15)
-    w_mar = cfg_scoring.get("margin_quality_weight", 0.15)
-    w_tim = cfg_scoring.get("timing_weight", 0.10)
-    max_pos = cfg_risk.get("max_position_pct", 0.05)
-    min_score = cfg_scoring.get("min_score_to_trade", 0.45)
-    max_age = (cfg_shock or {}).get("max_age_days", 5)
+    w_lev   = cfg_scoring.get("leverage_quality_weight", 0.15)
+    w_mar   = cfg_scoring.get("margin_quality_weight", 0.15)
+    w_tim   = cfg_scoring.get("timing_weight", 0.10)
 
-    # Component scores
+    max_age  = (cfg_shock or {}).get("max_age_days", 5)
+    max_pos  = cfg_risk.get("max_position_pct", 0.05)
+    min_pos  = cfg_risk.get("min_position_pct", 0.005)
+
+    # CML sizing params
+    target_risk      = cfg_risk.get("target_position_risk_pct", 0.01)
+    ref_sharpe       = cfg_risk.get("reference_sharpe", 0.50)
+    max_boost        = cfg_risk.get("max_signal_boost", 2.0)
+    holding_days     = (cfg_shock or {}).get("max_age_days", 5)
+
+    # ── Component scores ──────────────────────────────────────────────────
     a_score = _alpha_score(signal.alpha)
     s_score = float(np.clip(signal.shock_score, 0.0, 1.0))
 
@@ -162,17 +235,25 @@ def score_signal(
     m_score = margin_quality_score(fund.get("operating_margin", 0.10))
     t_score = _timing_score(signal.shock_age_days, max_age)
 
-    # Composite
-    total = (
-        w_alpha * a_score
-        + w_shock * s_score
-        + w_lev * l_score
-        + w_mar * m_score
-        + w_tim * t_score
-    )
-    total = float(np.clip(total, 0.0, 1.0))
+    # ── Composite ─────────────────────────────────────────────────────────
+    total = float(np.clip(
+        w_alpha * a_score + w_shock * s_score + w_lev * l_score
+        + w_mar * m_score + w_tim * t_score,
+        0.0, 1.0,
+    ))
 
-    pos_size = _position_size(total, max_pos, min_score)
+    # ── CML + risk-parity sizing ──────────────────────────────────────────
+    sizing = cml_position_size(
+        alpha=signal.alpha,
+        residual_vol_annual=residual_vol_annual,
+        composite_score=total,
+        holding_days=holding_days,
+        target_risk=target_risk,
+        reference_sharpe=ref_sharpe,
+        max_boost=max_boost,
+        max_pos=max_pos,
+        min_pos=min_pos,
+    )
 
     return ScoredSignal(
         signal=signal,
@@ -182,8 +263,12 @@ def score_signal(
         margin_score=m_score,
         timing_score=t_score,
         total_score=total,
-        position_size_pct=pos_size,
         signal_strength=_signal_strength(total),
+        residual_vol_annual=sizing["residual_vol_annual"],
+        sharpe_signal=sizing["sharpe_signal"],
+        base_size=sizing["base_size"],
+        size_boost=sizing["size_boost"],
+        position_size_pct=sizing["position_size_pct"],
     )
 
 
@@ -193,19 +278,22 @@ def score_all_signals(
     cfg_scoring: Dict,
     cfg_risk: Dict,
     cfg_shock: Optional[Dict] = None,
+    residual_vol_map: Optional[Dict[str, float]] = None,
     top_n: int = 20,
 ) -> List[ScoredSignal]:
     """
     Score all filtered signals and return top_n ranked by total_score.
 
     Args:
-        signals        : List of filtered AlphaSignal
-        fundamentals_df: DataFrame with ticker index (from Step 2 data)
-        cfg_scoring    : scoring section from config
-        cfg_risk       : risk section from config
-        top_n          : Return top N signals only
+        signals          : List of filtered AlphaSignal
+        fundamentals_df  : DataFrame with ticker index
+        cfg_scoring      : scoring section from config
+        cfg_risk         : risk section from config
+        residual_vol_map : {ticker: annualised_residual_vol} from noise_cleaner
+        top_n            : Return top N signals only
     """
-    min_score = cfg_scoring.get("min_score_to_trade", 0.45)
+    vol_map = residual_vol_map or {}
+    min_display = cfg_scoring.get("min_display_score", 0.30)
     scored = []
 
     for signal in signals:
@@ -214,19 +302,28 @@ def score_all_signals(
             if (not fundamentals_df.empty and signal.ticker in fundamentals_df.index)
             else None
         )
-        ss = score_signal(signal, fund, cfg_scoring, cfg_risk, cfg_shock)
-        if ss.total_score >= cfg_scoring.get("min_display_score", 0.30):
+        resid_vol = vol_map.get(signal.ticker, 0.0)
+
+        ss = score_signal(
+            signal=signal,
+            fundamentals=fund,
+            cfg_scoring=cfg_scoring,
+            cfg_risk=cfg_risk,
+            cfg_shock=cfg_shock,
+            residual_vol_annual=resid_vol,
+        )
+        if ss.total_score >= min_display:
             scored.append(ss)
 
-    # Sort by score
+    # Sort by composite score descending
     scored.sort(key=lambda s: s.total_score, reverse=True)
 
-    # Deduplicate: only the best signal per ticker
-    seen_tickers = set()
+    # Keep only the best signal per ticker (deduplicate)
+    seen: set = set()
     deduped = []
     for ss in scored:
-        if ss.ticker not in seen_tickers:
-            seen_tickers.add(ss.ticker)
+        if ss.ticker not in seen:
+            seen.add(ss.ticker)
             deduped.append(ss)
 
     return deduped[:top_n]
@@ -238,19 +335,21 @@ def scored_signals_to_dataframe(scored: List[ScoredSignal]) -> pd.DataFrame:
         return pd.DataFrame()
     rows = [
         {
-            "Ticker": ss.ticker,
-            "Commodity": ss.commodity,
-            "Role": ss.signal.role,
-            "Direction": ss.direction,
-            "Alpha %": f"{ss.alpha * 100:+.2f}%",
-            "Score": f"{ss.total_score:.3f}",
-            "Strength": ss.signal_strength,
-            "Size %": f"{ss.position_size_pct * 100:.1f}%",
+            "Ticker":      ss.ticker,
+            "Commodity":   ss.commodity,
+            "Role":        ss.signal.role,
+            "Direction":   ss.direction,
+            "Alpha %":     f"{ss.alpha * 100:+.2f}%",
+            "Score":       f"{ss.total_score:.3f}",
+            "Strength":    ss.signal_strength,
+            "σ resid":     f"{ss.residual_vol_annual * 100:.1f}%",
+            "SR signal":   f"{ss.sharpe_signal:.2f}",
+            "Base size":   f"{ss.base_size * 100:.1f}%",
+            "Boost":       f"{ss.size_boost:.2f}×",
+            "Size %":      f"{ss.position_size_pct * 100:.1f}%",
             "Shock Score": f"{ss.shock_score:.3f}",
-            "α Score": f"{ss.alpha_score:.3f}",
-            "Lev. Score": f"{ss.leverage_score:.3f}",
-            "Timing": f"{ss.timing_score:.3f}",
-            "Age (d)": ss.signal.shock_age_days,
+            "Timing":      f"{ss.timing_score:.3f}",
+            "Age (d)":     ss.signal.shock_age_days,
         }
         for ss in scored
     ]

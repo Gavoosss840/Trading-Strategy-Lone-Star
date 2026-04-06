@@ -288,11 +288,22 @@ scoring:
 
 # ── Risk management ───────────────────────────
 risk:
-  max_position_pct: 0.05
-  max_commodity_exposure: 0.20
-  stop_loss_pct: 0.05
-  take_profit_pct: 0.10
-  max_holding_days: 10
+  # Hard position limits
+  max_position_pct: 0.05          # Maximum 5% per position
+  min_position_pct: 0.005         # Minimum 0.5% (below → discard)
+  max_commodity_exposure: 0.20    # Maximum 20% gross exposure per commodity
+  stop_loss_pct: 0.05             # Stop loss at -5%
+  take_profit_pct: 0.10           # Take profit at +10%
+  max_holding_days: 10            # Force-close after 10 days
+
+  # ── CML + risk-parity sizing parameters ──────
+  # Position size = base_size × boost × composite_score
+  # where:
+  #   base_size = target_position_risk_pct / sigma_residual_annual  (inverse vol)
+  #   boost     = min(SR_signal / reference_sharpe, max_signal_boost)
+  target_position_risk_pct: 0.01  # Target 1% annual idiosyncratic vol per position
+  reference_sharpe: 0.50          # Boost = 1× at SR=0.50, 2× at SR=1.0
+  max_signal_boost: 2.0           # Cap boost at 2× (prevents over-concentration)
 
 # ── Output ────────────────────────────────────
 output:
