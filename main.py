@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
         help="Filter signals to a specific commodity (e.g. crude_oil, gold)",
     )
     parser.add_argument(
+        "--zone",
+        default=None,
+        choices=["americas", "europe", "middle_east", "asia_pacific"],
+        help="Filter signals to a geographic zone",
+    )
+    parser.add_argument(
         "--direction",
         choices=["LONG", "SHORT"],
         default=None,
@@ -95,9 +101,15 @@ def main() -> int:
         from src.pipeline.exposure_mapping import summarize_exposures
         from tabulate import tabulate
         print("\n📐 Commodity Beta Exposure Map (significant pairs):")
-        df = summarize_exposures(result.exposure_map)
+        df = summarize_exposures(result.exposure_map).reset_index()
+        # Enrich with zone and company name
+        if not result.stock_metadata.empty:
+            meta = result.stock_metadata[["name", "zone"]].reset_index()
+            df = df.merge(meta, left_on="ticker", right_on="ticker", how="left")
+            df.insert(1, "zone", df.pop("zone"))
+            df.insert(2, "name", df.pop("name"))
         if not df.empty:
-            print(tabulate(df.head(30), headers="keys", tablefmt="rounded_outline"))
+            print(tabulate(df.head(40), headers="keys", tablefmt="rounded_outline", showindex=False))
         else:
             print("  No significant exposures found.")
 
@@ -107,11 +119,15 @@ def main() -> int:
 
     # ── Filter signals ─────────────────────────────────────────────────────────
     signals = result.scored_signals
+    meta = result.stock_metadata
 
     if args.commodity:
         signals = [s for s in signals if s.commodity == args.commodity]
     if args.direction:
         signals = [s for s in signals if s.direction == args.direction]
+    if args.zone and not meta.empty:
+        tickers_in_zone = meta[meta["zone"] == args.zone].index.tolist()
+        signals = [s for s in signals if s.ticker in tickers_in_zone]
 
     # ── Print results ──────────────────────────────────────────────────────────
     result.scored_signals = signals

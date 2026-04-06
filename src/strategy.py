@@ -53,11 +53,21 @@ class StrategyResult:
     active_shocks_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     all_signals_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     fundamentals_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+    stock_metadata: pd.DataFrame = field(default_factory=pd.DataFrame)
     run_time_seconds: float = 0.0
     warnings: List[str] = field(default_factory=list)
 
     def signals_dataframe(self) -> pd.DataFrame:
-        return scored_signals_to_dataframe(self.scored_signals)
+        df = scored_signals_to_dataframe(self.scored_signals)
+        if df.empty or self.stock_metadata.empty:
+            return df
+        # Inject zone and company name
+        meta = self.stock_metadata[["name", "zone"]].rename(columns={"name": "Company"})
+        df = df.merge(meta, left_on="Ticker", right_index=True, how="left")
+        # Reorder: Ticker, Company, Zone first
+        front = ["Ticker", "Company", "zone", "Direction", "Commodity", "Role"]
+        rest = [c for c in df.columns if c not in front]
+        return df[[c for c in front if c in df.columns] + rest]
 
     def print_signals(self, top_n: int = 10) -> None:
         """Pretty-print the top scored signals to stdout."""
@@ -106,6 +116,15 @@ class StrategyResult:
         longs = sum(1 for s in self.scored_signals if s.direction == "LONG")
         shorts = sum(1 for s in self.scored_signals if s.direction == "SHORT")
         print(f"\n  Summary: {longs} LONG  |  {shorts} SHORT  |  {len(self.scored_signals)} total signals")
+
+        # Zone breakdown
+        if not self.stock_metadata.empty:
+            df_full = self.signals_dataframe()
+            if "zone" in df_full.columns:
+                zone_counts = df_full["zone"].value_counts().to_dict()
+                zone_str = "  |  ".join(f"{z}: {n}" for z, n in zone_counts.items())
+                print(f"  By zone: {zone_str}")
+
         print(f"  Pipeline completed in {self.run_time_seconds:.1f}s")
         print("═" * 80 + "\n")
 
@@ -132,13 +151,32 @@ class LoneStarStrategy:
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _get_all_stock_tickers(self) -> List[str]:
-        """Flatten all stock tickers from config into a unique list."""
+        """Flatten all stock tickers from the geographic config into a unique list."""
         tickers = set()
         stocks_cfg = self.cfg.get("stocks", {})
-        for commodity_group in stocks_cfg.values():
-            for role_list in commodity_group.values():
-                tickers.update(role_list)
+        for zone_list in stocks_cfg.values():
+            for entry in zone_list:
+                tickers.add(entry["ticker"])
         return sorted(tickers)
+
+    def _get_stock_metadata(self) -> pd.DataFrame:
+        """
+        Return a DataFrame with columns [ticker, name, zone,
+        primary_commodity, role] for every stock in the universe.
+        """
+        rows = []
+        stocks_cfg = self.cfg.get("stocks", {})
+        for zone, entries in stocks_cfg.items():
+            for entry in entries:
+                rows.append({
+                    "ticker": entry["ticker"],
+                    "name": entry.get("name", entry["ticker"]),
+                    "zone": zone,
+                    "primary_commodity": entry.get("primary_commodity", ""),
+                    "role": entry.get("role", ""),
+                })
+        df = pd.DataFrame(rows).drop_duplicates("ticker").set_index("ticker")
+        return df
 
     def _print_step(self, step: int, name: str) -> None:
         print(f"  [{step}/7] {name}...", end=" ", flush=True)
@@ -176,12 +214,20 @@ class LoneStarStrategy:
         min_obs = data_cfg.get("min_observations", 120)
 
         stock_tickers = self._get_all_stock_tickers()
+        stock_metadata = self._get_stock_metadata()
+        result.stock_metadata = stock_metadata
 
         if verbose:
             print("\n" + "─" * 60)
             print("  ★  LONE STAR — Running Pipeline")
             print("─" * 60)
+            zones = self.cfg.get("stocks", {}).keys()
+            zone_counts = {
+                z: len(self.cfg["stocks"][z]) for z in zones
+            }
+            zone_str = "  |  ".join(f"{z}: {n}" for z, n in zone_counts.items())
             print(f"  Universe: {len(stock_tickers)} stocks × {len(commodity_cfg)} commodities")
+            print(f"  Zones: {zone_str}")
 
         # ── Data load ──────────────────────────────────────────────────────────
         if verbose:

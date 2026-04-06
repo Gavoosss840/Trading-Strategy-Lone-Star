@@ -37,81 +37,336 @@ commodities:
     name: "Soybeans"
     unit: "bushel"
 
-# ── Stock universe ────────────────────────────
-# Grouped by primary commodity exposure
+# ── Stock universe — by geographic zone ───────
+# Each entry: ticker, name, primary_commodity, role (producer|consumer)
+# primary_commodity = main exposure used for signal generation
+# The regression (Step 1) tests ALL (stock, commodity) pairs regardless.
 stocks:
-  crude_oil:
-    producers:
-      - "XOM"   # ExxonMobil
-      - "CVX"   # Chevron
-      - "COP"   # ConocoPhillips
-      - "SLB"   # SLB (Schlumberger)
-      - "EOG"   # EOG Resources
-      - "PXD"   # Pioneer Natural Resources
-      - "MPC"   # Marathon Petroleum
-      - "VLO"   # Valero Energy
-    consumers:
-      - "AAL"   # American Airlines
-      - "DAL"   # Delta Air Lines
-      - "UAL"   # United Airlines
-      - "FDX"   # FedEx
-      - "UPS"   # UPS
-      - "UNP"   # Union Pacific
-      - "CSX"   # CSX (railroad)
-  natural_gas:
-    producers:
-      - "EQT"   # EQT Corp
-      - "AR"    # Antero Resources
-      - "RRC"   # Range Resources
-      - "SWN"   # Southwestern Energy
-    consumers:
-      - "LYB"   # LyondellBasell (petrochemicals)
-      - "DOW"   # Dow Inc.
-      - "DD"    # DuPont
-      - "CE"    # Celanese
-  gold:
-    producers:
-      - "NEM"   # Newmont
-      - "GOLD"  # Barrick Gold
-      - "AEM"   # Agnico Eagle
-      - "KGC"   # Kinross Gold
-    consumers:
-      - "TIF"   # (proxy: luxury/jewelry)
-      - "SWK"   # Stanley Black & Decker (industrial tools)
-  copper:
-    producers:
-      - "FCX"   # Freeport-McMoRan
-      - "SCCO"  # Southern Copper
-      - "TECK"  # Teck Resources
-    consumers:
-      - "GE"    # GE (industrial)
-      - "ETN"   # Eaton (electrical)
-      - "ROK"   # Rockwell Automation
-      - "WHR"   # Whirlpool
-  wheat:
-    producers:
-      - "ADM"   # Archer-Daniels-Midland
-      - "BG"    # Bunge
-    consumers:
-      - "GIS"   # General Mills
-      - "K"     # Kellogg's
-      - "CPB"   # Campbell Soup
-      - "MKC"   # McCormick
-  corn:
-    producers:
-      - "ADM"   # Archer-Daniels-Midland
-      - "BG"    # Bunge
-    consumers:
-      - "TSN"   # Tyson Foods
-      - "HRL"   # Hormel Foods
-      - "CAG"   # Conagra Brands
-  soybeans:
-    producers:
-      - "ADM"
-      - "BG"
-    consumers:
-      - "TSN"
-      - "HRL"
+
+  americas:
+    # ── North America — Producers ─────────────
+    - ticker: "XOM"
+      name: "ExxonMobil"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "CVX"
+      name: "Chevron"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "COP"
+      name: "ConocoPhillips"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "EOG"
+      name: "EOG Resources"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "SLB"
+      name: "SLB (Schlumberger)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "MPC"
+      name: "Marathon Petroleum"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "VLO"
+      name: "Valero Energy"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "EQT"
+      name: "EQT Corp"
+      primary_commodity: natural_gas
+      role: producer
+    - ticker: "AR"
+      name: "Antero Resources"
+      primary_commodity: natural_gas
+      role: producer
+    - ticker: "NEM"
+      name: "Newmont"
+      primary_commodity: gold
+      role: producer
+    - ticker: "GOLD"
+      name: "Barrick Gold"
+      primary_commodity: gold
+      role: producer
+    - ticker: "AEM"
+      name: "Agnico Eagle Mines"
+      primary_commodity: gold
+      role: producer
+    - ticker: "FCX"
+      name: "Freeport-McMoRan"
+      primary_commodity: copper
+      role: producer
+    - ticker: "ADM"
+      name: "Archer-Daniels-Midland"
+      primary_commodity: corn
+      role: producer
+    - ticker: "BG"
+      name: "Bunge Global"
+      primary_commodity: soybeans
+      role: producer
+    - ticker: "MOS"
+      name: "The Mosaic Company"
+      primary_commodity: corn
+      role: producer
+    # ── North America — Consumers ─────────────
+    - ticker: "AAL"
+      name: "American Airlines"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "DAL"
+      name: "Delta Air Lines"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "UAL"
+      name: "United Airlines"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "FDX"
+      name: "FedEx"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "UPS"
+      name: "UPS"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "DOW"
+      name: "Dow Inc."
+      primary_commodity: natural_gas
+      role: consumer
+    - ticker: "LYB"
+      name: "LyondellBasell"
+      primary_commodity: natural_gas
+      role: consumer
+    - ticker: "GIS"
+      name: "General Mills"
+      primary_commodity: wheat
+      role: consumer
+    - ticker: "K"
+      name: "Kellanova"
+      primary_commodity: wheat
+      role: consumer
+    - ticker: "TSN"
+      name: "Tyson Foods"
+      primary_commodity: corn
+      role: consumer
+    - ticker: "HRL"
+      name: "Hormel Foods"
+      primary_commodity: corn
+      role: consumer
+    - ticker: "CAG"
+      name: "Conagra Brands"
+      primary_commodity: soybeans
+      role: consumer
+    - ticker: "ETN"
+      name: "Eaton"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "WHR"
+      name: "Whirlpool"
+      primary_commodity: copper
+      role: consumer
+    # ── Latin America — Producers ─────────────
+    - ticker: "VALE"
+      name: "Vale S.A. (Brazil)"
+      primary_commodity: copper
+      role: producer
+    - ticker: "SCCO"
+      name: "Southern Copper (Mexico/Peru)"
+      primary_commodity: copper
+      role: producer
+    - ticker: "PBR"
+      name: "Petrobras (Brazil)"
+      primary_commodity: crude_oil
+      role: producer
+
+  europe:
+    # ── Producers ─────────────────────────────
+    - ticker: "BP"
+      name: "BP (UK)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "SHEL"
+      name: "Shell (UK/Netherlands)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "TTE"
+      name: "TotalEnergies (France)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "ENI"
+      name: "Eni S.p.A. (Italy)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "EQNR"
+      name: "Equinor (Norway)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "GLEN"
+      name: "Glencore (UK/Switzerland)"
+      primary_commodity: copper
+      role: producer
+    - ticker: "RIO"
+      name: "Rio Tinto (UK/Australia)"
+      primary_commodity: copper
+      role: producer
+    - ticker: "AAL"
+      name: "Anglo American (UK)"
+      primary_commodity: copper
+      role: producer
+    - ticker: "WPM"
+      name: "Wheaton Precious Metals (Canada/Europe listed)"
+      primary_commodity: gold
+      role: producer
+    # ── Consumers ─────────────────────────────
+    - ticker: "EADSF"
+      name: "Airbus (France/Germany)"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "BASFY"
+      name: "BASF (Germany)"
+      primary_commodity: natural_gas
+      role: consumer
+    - ticker: "LRLCY"
+      name: "L'Oréal (France) — gold/silver"
+      primary_commodity: gold
+      role: consumer
+    - ticker: "LVMHF"
+      name: "LVMH (France) — gold/silver luxury"
+      primary_commodity: gold
+      role: consumer
+    - ticker: "SIEGY"
+      name: "Siemens (Germany)"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "VOWG_p.DE"
+      name: "Volkswagen (Germany)"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "RYANAIR"
+      name: "Ryanair (Ireland)"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "IAG"
+      name: "IAG — British Airways/Iberia (UK)"
+      primary_commodity: crude_oil
+      role: consumer
+
+  middle_east:
+    # ── Producers ─────────────────────────────
+    - ticker: "2222.SR"
+      name: "Saudi Aramco (Saudi Arabia)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "1211.SR"
+      name: "Ma'aden (Saudi Arabia) — gold/phosphate"
+      primary_commodity: gold
+      role: producer
+    - ticker: "TAQA.AD"
+      name: "TAQA — Abu Dhabi National Energy"
+      primary_commodity: natural_gas
+      role: producer
+    - ticker: "ADNOCDIST.AD"
+      name: "ADNOC Distribution (UAE)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "OCI"
+      name: "OCI N.V. (Netherlands/ME) — natural gas → fertilizers"
+      primary_commodity: natural_gas
+      role: consumer
+    # ── Consumers ─────────────────────────────
+    - ticker: "EMAAR.DU"
+      name: "Emaar Properties (UAE) — copper/steel consumer"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "AIR.AD"
+      name: "Air Arabia (UAE)"
+      primary_commodity: crude_oil
+      role: consumer
+
+  asia_pacific:
+    # ── Producers ─────────────────────────────
+    - ticker: "BHP"
+      name: "BHP Group (Australia)"
+      primary_commodity: copper
+      role: producer
+    - ticker: "WDS"
+      name: "Woodside Energy (Australia)"
+      primary_commodity: natural_gas
+      role: producer
+    - ticker: "FMG"
+      name: "Fortescue (Australia) — iron ore / green energy"
+      primary_commodity: copper
+      role: producer
+    - ticker: "NCM"
+      name: "Newcrest Mining (Australia)"
+      primary_commodity: gold
+      role: producer
+    - ticker: "0883.HK"
+      name: "CNOOC (China)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "0857.HK"
+      name: "PetroChina (China)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "0386.HK"
+      name: "Sinopec (China)"
+      primary_commodity: crude_oil
+      role: producer
+    - ticker: "1088.HK"
+      name: "China Shenhua Energy (China)"
+      primary_commodity: natural_gas
+      role: producer
+    # ── Consumers ─────────────────────────────
+    - ticker: "TM"
+      name: "Toyota (Japan)"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "HMC"
+      name: "Honda Motor (Japan)"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "STLAM"
+      name: "Stellantis (multi-region)"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "PKX"
+      name: "POSCO Holdings (South Korea) — steel/copper"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "005930.KS"
+      name: "Samsung Electronics (South Korea)"
+      primary_commodity: copper
+      role: consumer
+    - ticker: "9202.T"
+      name: "ANA Holdings (Japan)"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "9201.T"
+      name: "Japan Airlines (Japan)"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "C6L.SI"
+      name: "Singapore Airlines (Singapore)"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "0293.HK"
+      name: "Cathay Pacific (Hong Kong)"
+      primary_commodity: crude_oil
+      role: consumer
+    - ticker: "2897.T"
+      name: "Nissin Foods (Japan) — wheat consumer"
+      primary_commodity: wheat
+      role: consumer
+    - ticker: "2802.T"
+      name: "Ajinomoto (Japan) — corn/soy consumer"
+      primary_commodity: corn
+      role: consumer
+    - ticker: "000895.SZ"
+      name: "Shuanghui Development (China) — corn/soy consumer"
+      primary_commodity: corn
+      role: consumer
 
 # ── Data parameters ───────────────────────────
 data:
@@ -129,24 +384,24 @@ beta:
 # ── Fundamental adjustment ────────────────────
 fundamental:
   default_tax_rate: 0.21      # US corporate tax rate
-  leverage_weight: 0.4        # Weight of leverage in beta adjustment
-  margin_weight: 0.3          # Weight of operating margins
-  coverage_weight: 0.3        # Weight of interest coverage
+  leverage_weight: 0.4
+  margin_weight: 0.3
+  coverage_weight: 0.3
 
 # ── Shock detection ───────────────────────────
 shock:
-  min_amplitude_pct: 1.5      # Minimum daily move to qualify as shock (%)
-  min_zscore: 1.5             # Minimum z-score vs historical volatility
-  lookback_vol_days: 63       # Rolling window for historical volatility
-  speed_decay: 0.7            # Decay factor per additional day (multi-day shocks)
-  max_age_days: 5             # Maximum age of shock to still be exploitable
+  min_amplitude_pct: 1.5
+  min_zscore: 1.5
+  lookback_vol_days: 63
+  speed_decay: 0.7
+  max_age_days: 5
 
 # ── Alpha thresholds ──────────────────────────
 alpha:
-  min_alpha_pct: 0.5          # Minimum alpha to generate signal (%)
-  max_alpha_pct: 15.0         # Maximum alpha before flagging as exaggerated (%)
-  decay_halflife_days: 3      # Expected alpha half-life
-  already_priced_ratio: 0.85  # If actual reaction > 85% of expected, skip
+  min_alpha_pct: 0.5
+  max_alpha_pct: 15.0
+  decay_halflife_days: 3
+  already_priced_ratio: 0.85
 
 # ── Scoring weights ───────────────────────────
 scoring:
@@ -155,17 +410,18 @@ scoring:
   leverage_quality_weight: 0.15
   margin_quality_weight: 0.15
   timing_weight: 0.10
-  min_score_to_trade: 0.45    # Minimum composite score to generate trade signal
+  min_score_to_trade: 0.45
+  min_display_score: 0.30
 
 # ── Risk management ───────────────────────────
 risk:
-  max_position_pct: 0.05      # Maximum 5% per position
-  max_commodity_exposure: 0.20  # Maximum 20% exposure per commodity
-  stop_loss_pct: 0.05         # 5% stop loss
-  take_profit_pct: 0.10       # 10% take profit
-  max_holding_days: 10        # Max holding period for alpha trades
+  max_position_pct: 0.05
+  max_commodity_exposure: 0.20
+  stop_loss_pct: 0.05
+  take_profit_pct: 0.10
+  max_holding_days: 10
 
 # ── Output ────────────────────────────────────
 output:
-  top_n_signals: 10           # Top N signals to display
+  top_n_signals: 10
   min_display_score: 0.30
