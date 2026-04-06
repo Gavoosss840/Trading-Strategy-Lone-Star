@@ -5,11 +5,14 @@ Lone Star — Entry Point
 Run the Lone Star commodity-exposure alpha strategy.
 
 Usage:
-    python main.py                          # Run with default config
+    python main.py                          # Run live signals only
+    python main.py --report                 # Full backtest + charts + report.png
+    python main.py --report --output out/   # Custom output directory
     python main.py --config path/to/cfg.yaml
-    python main.py --top 20                 # Show top 20 signals
+    python main.py --top 20                 # Show top 20 live signals
     python main.py --commodity crude_oil    # Filter to one commodity
-    python main.py --export signals.csv     # Export signals to CSV
+    python main.py --zone europe            # Filter to one geographic zone
+    python main.py --export signals.csv     # Export live signals to CSV
 """
 
 from __future__ import annotations
@@ -60,6 +63,22 @@ def parse_args() -> argparse.Namespace:
         help="Export signals to a CSV file",
     )
     parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Run full backtest and generate report.png + all output files",
+    )
+    parser.add_argument(
+        "--output",
+        default="output",
+        metavar="DIR",
+        help="Output directory for reports (default: output/)",
+    )
+    parser.add_argument(
+        "--no-live",
+        action="store_true",
+        help="Skip live signal scan when running --report",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress pipeline progress output",
@@ -91,6 +110,21 @@ def main() -> int:
         print(f"Import error: {exc}", file=sys.stderr)
         print("Make sure you installed requirements: pip install -r requirements.txt", file=sys.stderr)
         return 1
+
+    # ── Report mode (backtest + full output) ──────────────────────────────
+    if args.report:
+        try:
+            from src.reporting.report_builder import build_reports
+        except ImportError as exc:
+            print(f"Import error (reporting): {exc}", file=sys.stderr)
+            return 1
+        build_reports(
+            config_path=str(config_path),
+            output_dir=args.output,
+            run_live=not args.no_live,
+            verbose=not args.quiet,
+        )
+        return 0
 
     # ── Load and run strategy ──────────────────────────────────────────────────
     strategy = LoneStarStrategy.from_config(str(config_path))
