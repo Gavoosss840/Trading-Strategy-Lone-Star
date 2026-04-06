@@ -1,0 +1,49 @@
+# ── Python cache ──────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environments ───────────────────────
+.venv/
+venv/
+env/
+.env
+
+# ── Generated output files ────────────────────
+# Keep the folder structure (.gitkeep files) but ignore generated content
+output/**/*.png
+output/**/*.csv
+output/**/*.json
+output/**/equity_curve.png
+output/**/rolling_sharpe.png
+output/**/monthly_heatmap.png
+output/**/report.png
+output/**/positions.csv
+output/**/monthly_returns.csv
+output/**/analytics.json
+output/**/combined_analytics.json
+output/**/combined_monthly_returns.csv
+output/execution_*.json
+output/live/execution_*.json
+
+# ── IDE / OS ──────────────────────────────────
+.vscode/settings.json
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Jupyter ───────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Data cache ────────────────────────────────
+data/
+*.pkl
+*.parquet
+*.h5
