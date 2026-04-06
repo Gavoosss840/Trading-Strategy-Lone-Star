@@ -1,0 +1,171 @@
+# ─────────────────────────────────────────────
+#  LONE STAR — Strategy Configuration
+# ─────────────────────────────────────────────
+
+# ── Commodities universe ──────────────────────
+commodities:
+  crude_oil:
+    ticker: "CL=F"
+    name: "Crude Oil"
+    unit: "barrel"
+  natural_gas:
+    ticker: "NG=F"
+    name: "Natural Gas"
+    unit: "mmbtu"
+  gold:
+    ticker: "GC=F"
+    name: "Gold"
+    unit: "oz"
+  silver:
+    ticker: "SI=F"
+    name: "Silver"
+    unit: "oz"
+  copper:
+    ticker: "HG=F"
+    name: "Copper"
+    unit: "lb"
+  wheat:
+    ticker: "ZW=F"
+    name: "Wheat"
+    unit: "bushel"
+  corn:
+    ticker: "ZC=F"
+    name: "Corn"
+    unit: "bushel"
+  soybeans:
+    ticker: "ZS=F"
+    name: "Soybeans"
+    unit: "bushel"
+
+# ── Stock universe ────────────────────────────
+# Grouped by primary commodity exposure
+stocks:
+  crude_oil:
+    producers:
+      - "XOM"   # ExxonMobil
+      - "CVX"   # Chevron
+      - "COP"   # ConocoPhillips
+      - "SLB"   # SLB (Schlumberger)
+      - "EOG"   # EOG Resources
+      - "PXD"   # Pioneer Natural Resources
+      - "MPC"   # Marathon Petroleum
+      - "VLO"   # Valero Energy
+    consumers:
+      - "AAL"   # American Airlines
+      - "DAL"   # Delta Air Lines
+      - "UAL"   # United Airlines
+      - "FDX"   # FedEx
+      - "UPS"   # UPS
+      - "UNP"   # Union Pacific
+      - "CSX"   # CSX (railroad)
+  natural_gas:
+    producers:
+      - "EQT"   # EQT Corp
+      - "AR"    # Antero Resources
+      - "RRC"   # Range Resources
+      - "SWN"   # Southwestern Energy
+    consumers:
+      - "LYB"   # LyondellBasell (petrochemicals)
+      - "DOW"   # Dow Inc.
+      - "DD"    # DuPont
+      - "CE"    # Celanese
+  gold:
+    producers:
+      - "NEM"   # Newmont
+      - "GOLD"  # Barrick Gold
+      - "AEM"   # Agnico Eagle
+      - "KGC"   # Kinross Gold
+    consumers:
+      - "TIF"   # (proxy: luxury/jewelry)
+      - "SWK"   # Stanley Black & Decker (industrial tools)
+  copper:
+    producers:
+      - "FCX"   # Freeport-McMoRan
+      - "SCCO"  # Southern Copper
+      - "TECK"  # Teck Resources
+    consumers:
+      - "GE"    # GE (industrial)
+      - "ETN"   # Eaton (electrical)
+      - "ROK"   # Rockwell Automation
+      - "WHR"   # Whirlpool
+  wheat:
+    producers:
+      - "ADM"   # Archer-Daniels-Midland
+      - "BG"    # Bunge
+    consumers:
+      - "GIS"   # General Mills
+      - "K"     # Kellogg's
+      - "CPB"   # Campbell Soup
+      - "MKC"   # McCormick
+  corn:
+    producers:
+      - "ADM"   # Archer-Daniels-Midland
+      - "BG"    # Bunge
+    consumers:
+      - "TSN"   # Tyson Foods
+      - "HRL"   # Hormel Foods
+      - "CAG"   # Conagra Brands
+  soybeans:
+    producers:
+      - "ADM"
+      - "BG"
+    consumers:
+      - "TSN"
+      - "HRL"
+
+# ── Data parameters ───────────────────────────
+data:
+  lookback_days: 504          # ~2 years for beta estimation
+  shock_lookback_days: 63     # ~3 months for volatility baseline
+  min_observations: 120       # Minimum data points for regression
+  risk_free_rate_ticker: "^IRX"   # 13-week T-Bill
+
+# ── Beta estimation ───────────────────────────
+beta:
+  rolling_window: 252         # 1 year rolling window
+  min_r_squared: 0.05         # Minimum R² to consider beta meaningful
+  outlier_zscore_threshold: 3.5  # Remove outlier returns above this z-score
+
+# ── Fundamental adjustment ────────────────────
+fundamental:
+  default_tax_rate: 0.21      # US corporate tax rate
+  leverage_weight: 0.4        # Weight of leverage in beta adjustment
+  margin_weight: 0.3          # Weight of operating margins
+  coverage_weight: 0.3        # Weight of interest coverage
+
+# ── Shock detection ───────────────────────────
+shock:
+  min_amplitude_pct: 1.5      # Minimum daily move to qualify as shock (%)
+  min_zscore: 1.5             # Minimum z-score vs historical volatility
+  lookback_vol_days: 63       # Rolling window for historical volatility
+  speed_decay: 0.7            # Decay factor per additional day (multi-day shocks)
+  max_age_days: 5             # Maximum age of shock to still be exploitable
+
+# ── Alpha thresholds ──────────────────────────
+alpha:
+  min_alpha_pct: 0.5          # Minimum alpha to generate signal (%)
+  max_alpha_pct: 15.0         # Maximum alpha before flagging as exaggerated (%)
+  decay_halflife_days: 3      # Expected alpha half-life
+  already_priced_ratio: 0.85  # If actual reaction > 85% of expected, skip
+
+# ── Scoring weights ───────────────────────────
+scoring:
+  alpha_weight: 0.40
+  shock_weight: 0.20
+  leverage_quality_weight: 0.15
+  margin_quality_weight: 0.15
+  timing_weight: 0.10
+  min_score_to_trade: 0.45    # Minimum composite score to generate trade signal
+
+# ── Risk management ───────────────────────────
+risk:
+  max_position_pct: 0.05      # Maximum 5% per position
+  max_commodity_exposure: 0.20  # Maximum 20% exposure per commodity
+  stop_loss_pct: 0.05         # 5% stop loss
+  take_profit_pct: 0.10       # 10% take profit
+  max_holding_days: 10        # Max holding period for alpha trades
+
+# ── Output ────────────────────────────────────
+output:
+  top_n_signals: 10           # Top N signals to display
+  min_display_score: 0.30

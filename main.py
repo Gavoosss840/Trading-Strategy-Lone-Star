@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""
+Lone Star — Entry Point
+────────────────────────
+Run the Lone Star commodity-exposure alpha strategy.
+
+Usage:
+    python main.py                          # Run with default config
+    python main.py --config path/to/cfg.yaml
+    python main.py --top 20                 # Show top 20 signals
+    python main.py --commodity crude_oil    # Filter to one commodity
+    python main.py --export signals.csv     # Export signals to CSV
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Lone Star — Commodity Exposure Alpha Strategy",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--config",
+        default="config/config.yaml",
+        help="Path to YAML config file (default: config/config.yaml)",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Number of top signals to display (default: 10)",
+    )
+    parser.add_argument(
+        "--commodity",
+        default=None,
+        help="Filter signals to a specific commodity (e.g. crude_oil, gold)",
+    )
+    parser.add_argument(
+        "--direction",
+        choices=["LONG", "SHORT"],
+        default=None,
+        help="Filter signals by direction",
+    )
+    parser.add_argument(
+        "--export",
+        default=None,
+        metavar="FILE",
+        help="Export signals to a CSV file",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress pipeline progress output",
+    )
+    parser.add_argument(
+        "--show-betas",
+        action="store_true",
+        help="Print the exposure map (commodity betas) after running",
+    )
+    parser.add_argument(
+        "--show-shocks",
+        action="store_true",
+        help="Print detected commodity shocks",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"Error: config file not found: {config_path}", file=sys.stderr)
+        return 1
+
+    try:
+        from src.strategy import LoneStarStrategy
+    except ImportError as exc:
+        print(f"Import error: {exc}", file=sys.stderr)
+        print("Make sure you installed requirements: pip install -r requirements.txt", file=sys.stderr)
+        return 1
+
+    # ── Load and run strategy ──────────────────────────────────────────────────
+    strategy = LoneStarStrategy.from_config(str(config_path))
+    result = strategy.run(verbose=not args.quiet)
+
+    # ── Optional outputs ───────────────────────────────────────────────────────
+    if args.show_betas and result.exposure_map is not None:
+        from src.pipeline.exposure_mapping import summarize_exposures
+        from tabulate import tabulate
+        print("\n📐 Commodity Beta Exposure Map (significant pairs):")
+        df = summarize_exposures(result.exposure_map)
+        if not df.empty:
+            print(tabulate(df.head(30), headers="keys", tablefmt="rounded_outline"))
+        else:
+            print("  No significant exposures found.")
+
+    if args.show_shocks and not result.active_shocks_df.empty:
+        print("\n⚡ Detected Commodity Shocks:")
+        print(result.active_shocks_df.to_string())
+
+    # ── Filter signals ─────────────────────────────────────────────────────────
+    signals = result.scored_signals
+
+    if args.commodity:
+        signals = [s for s in signals if s.commodity == args.commodity]
+    if args.direction:
+        signals = [s for s in signals if s.direction == args.direction]
+
+    # ── Print results ──────────────────────────────────────────────────────────
+    result.scored_signals = signals
+    result.print_signals(top_n=args.top)
+
+    # ── Export ─────────────────────────────────────────────────────────────────
+    if args.export:
+        df = result.signals_dataframe()
+        out_path = Path(args.export)
+        df.to_csv(out_path, index=False)
+        print(f"  Signals exported to: {out_path}")
+
+    # ── Warnings ───────────────────────────────────────────────────────────────
+    if result.warnings:
+        print("\nWarnings:")
+        for w in result.warnings:
+            print(f"  ⚠  {w}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
