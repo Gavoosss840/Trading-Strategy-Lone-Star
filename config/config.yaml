@@ -292,9 +292,16 @@ risk:
   max_position_pct: 0.05          # Maximum 5% per position
   min_position_pct: 0.005         # Minimum 0.5% (below → discard)
   max_commodity_exposure: 0.20    # Maximum 20% gross exposure per commodity
-  stop_loss_pct: 0.05             # Stop loss at -5%
-  take_profit_pct: 0.10           # Take profit at +10%
   max_holding_days: 10            # Force-close after 10 days
+
+  # ── Exit rules ─────────────────────────────────
+  # Take Profit: linked to α=0 fair value (price where shock is fully priced)
+  #   LONG  → take_profit_price = entry × (1 + |alpha|)
+  #   SHORT → take_profit_price = entry × (1 - |alpha|)
+  #   No fixed % override needed — the signal itself defines the target.
+  #
+  # Stop Loss: max drawdown % from entry (Taurus-style fixed guard)
+  stop_loss_pct: 0.05             # Stop loss at -5% from entry (max drawdown)
 
   # ── CML + risk-parity sizing parameters ──────
   # Position size = base_size × boost × composite_score

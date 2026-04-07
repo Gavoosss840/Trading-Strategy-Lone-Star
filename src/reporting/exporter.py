@@ -119,6 +119,9 @@ def _trade_to_row(t: Trade) -> dict:
         "exit_date": str(t.exit_date.date()) if t.exit_date else "open",
         "entry_price": round(t.entry_price, 4),
         "exit_price": round(t.exit_price, 4) if t.exit_price else None,
+        "take_profit_price": round(t.take_profit_price, 4) if t.take_profit_price else None,
+        "stop_loss_price": round(t.stop_loss_price, 4) if t.stop_loss_price else None,
+        "alpha_at_entry_pct": round(t.alpha_at_entry * 100, 3),
         "size_pct": round(t.size * 100, 2),
         "pnl_pct": round(t.pnl_pct * 100, 4),
         "holding_days": t.holding_days,
@@ -148,6 +151,42 @@ def export_positions(
 
 # ── execution_{commodity}_{date}.json ─────────────────────────────────────────
 
+def _signal_to_execution_record(s) -> dict:
+    """
+    Convert a ScoredSignal to an execution order record with TP/SL levels.
+
+    Take Profit price = entry fair-value when α = 0 (shock fully priced):
+      LONG  → any reference price × (1 + |alpha|)
+      SHORT → any reference price × (1 − |alpha|)
+
+    Note: live signals have no entry price yet (not yet traded), so TP/SL
+    are expressed as |alpha|% distances from the execution price — the
+    broker/OMS should apply them at fill.
+    """
+    abs_alpha = abs(s.alpha)
+    return {
+        "ticker": s.ticker,
+        "direction": s.direction,
+        "alpha_pct": round(s.alpha * 100, 3),
+        "score": round(s.total_score, 4),
+        "strength": s.signal_strength,
+        "size_pct": round(s.position_size_pct * 100, 2),
+        "commodity": s.commodity,
+        "role": s.signal.role,
+        "beta_adjusted": round(s.signal.beta_adjusted, 4),
+        "shock_return_pct": round(s.signal.shock_return * 100, 3),
+        "shock_score": round(s.signal.shock_score, 4),
+        "shock_age_days": s.signal.shock_age_days,
+        # Exit levels (as % distances from fill price — apply at execution)
+        "take_profit_distance_pct": round(abs_alpha * 100, 3),   # α=0 fair value
+        "stop_loss_distance_pct": None,   # filled from config at OMS level
+        "exit_logic": {
+            "take_profit": f"LONG: fill × (1 + {abs_alpha:.3%}) | SHORT: fill × (1 - {abs_alpha:.3%})",
+            "stop_loss":   "fill × (1 ± stop_loss_pct) — set from risk config",
+        },
+    }
+
+
 def export_execution_files(
     live_signals,               # List[ScoredSignal] from live run
     base: Path,
@@ -172,20 +211,7 @@ def export_execution_files(
             "run_date": date_str,
             "n_signals": len(signals),
             "signals": [
-                {
-                    "ticker": s.ticker,
-                    "direction": s.direction,
-                    "alpha_pct": round(s.alpha * 100, 3),
-                    "score": round(s.total_score, 4),
-                    "strength": s.signal_strength,
-                    "size_pct": round(s.position_size_pct * 100, 2),
-                    "commodity": s.commodity,
-                    "role": s.signal.role,
-                    "beta_adjusted": round(s.signal.beta_adjusted, 4),
-                    "shock_return_pct": round(s.signal.shock_return * 100, 3),
-                    "shock_score": round(s.signal.shock_score, 4),
-                    "shock_age_days": s.signal.shock_age_days,
-                }
+                _signal_to_execution_record(s)
                 for s in signals
             ],
         }

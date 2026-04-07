@@ -46,6 +46,11 @@ class Trade:
     pnl_pct: float = 0.0
     exit_reason: str = ""   # "take_profit" | "stop_loss" | "expired" | "open"
 
+    # Alpha-linked exit levels (set at entry)
+    alpha_at_entry: float = 0.0              # |alpha| used to compute fair-value TP
+    take_profit_price: Optional[float] = None  # price at which alpha = 0 (fully priced)
+    stop_loss_price: Optional[float] = None    # price at max drawdown % from entry
+
     @property
     def is_open(self) -> bool:
         return self.exit_date is None
@@ -134,9 +139,8 @@ def _capm_residuals(
 class Portfolio:
     """Tracks open positions and computes daily mark-to-market P&L."""
 
-    def __init__(self, stop_loss: float, take_profit: float, max_holding: int) -> None:
-        self.stop_loss = stop_loss
-        self.take_profit = take_profit
+    def __init__(self, stop_loss_pct: float, max_holding: int) -> None:
+        self.stop_loss_pct = stop_loss_pct
         self.max_holding = max_holding
         self.open_trades: List[Trade] = []
         self.closed_trades: List[Trade] = []
@@ -155,7 +159,12 @@ class Portfolio:
     ) -> Dict[str, float]:
         """
         Mark-to-market all open positions.
-        Close positions that hit stop/take/expiry.
+
+        Exit logic:
+          - Take Profit : price reaches α=0 fair-value (trade.take_profit_price)
+          - Stop Loss   : price crosses max-drawdown threshold (trade.stop_loss_price)
+          - Expiry      : held for max_holding days
+
         Returns dict of commodity → daily P&L contribution.
         """
         daily_pnl: Dict[str, float] = {}
@@ -167,15 +176,28 @@ class Portfolio:
                 continue
 
             current_price = prices[trade.ticker]
-            raw_ret = current_price / trade.entry_price - 1
-            signed_ret = raw_ret if trade.direction == "LONG" else -raw_ret
             days_held = (current_date - trade.entry_date).days
 
-            # Check exit conditions
-            if signed_ret <= -self.stop_loss:
+            # Check exit conditions using absolute price levels
+            hit_stop = False
+            hit_tp = False
+
+            if trade.stop_loss_price is not None:
+                if trade.direction == "LONG":
+                    hit_stop = current_price <= trade.stop_loss_price
+                else:
+                    hit_stop = current_price >= trade.stop_loss_price
+
+            if trade.take_profit_price is not None:
+                if trade.direction == "LONG":
+                    hit_tp = current_price >= trade.take_profit_price
+                else:
+                    hit_tp = current_price <= trade.take_profit_price
+
+            if hit_stop:
                 trade.close(current_date, current_price, "stop_loss")
                 self.closed_trades.append(trade)
-            elif signed_ret >= self.take_profit:
+            elif hit_tp:
                 trade.close(current_date, current_price, "take_profit")
                 self.closed_trades.append(trade)
             elif days_held >= self.max_holding:
@@ -183,10 +205,11 @@ class Portfolio:
                 self.closed_trades.append(trade)
             else:
                 still_open.append(trade)
-                # Daily contribution: size × daily stock return
-                if trade.ticker in prices:
-                    c = trade.commodity
-                    daily_pnl[c] = daily_pnl.get(c, 0.0) + trade.size * signed_ret
+                # Daily contribution: size × signed daily stock return
+                raw_ret = current_price / trade.entry_price - 1
+                signed_ret = raw_ret if trade.direction == "LONG" else -raw_ret
+                c = trade.commodity
+                daily_pnl[c] = daily_pnl.get(c, 0.0) + trade.size * signed_ret
 
         self.open_trades = still_open
         return daily_pnl
@@ -240,7 +263,6 @@ def run_backtest(
     min_alpha  = alpha_cfg.get("min_alpha_pct", 0.5) / 100
     max_alpha  = alpha_cfg.get("max_alpha_pct", 15.0) / 100
     stop_loss  = risk_cfg.get("stop_loss_pct", 0.05)
-    take_prof  = risk_cfg.get("take_profit_pct", 0.10)
     max_hold   = risk_cfg.get("max_holding_days", 10)
     max_pos    = risk_cfg.get("max_position_pct", 0.05)
     ar_ratio   = alpha_cfg.get("already_priced_ratio", 0.85)
@@ -275,7 +297,7 @@ def run_backtest(
     common_dates = stock_returns.index.intersection(commodity_returns.index)
     sim_dates = common_dates[lookback:]
 
-    portfolio = Portfolio(stop_loss, take_prof, max_hold)
+    portfolio = Portfolio(stop_loss, max_hold)
 
     # daily P&L per commodity
     all_cols = commodities + ["combined"]
@@ -395,6 +417,18 @@ def run_backtest(
 
                     role = stock_metadata.loc[ticker, "role"] if ticker in stock_metadata.index else ""
 
+                    # ── Alpha-linked exit levels ─────────────────────────────
+                    # Take Profit: price at which the gap (α=0) is fully priced
+                    #   LONG  → expect price to rise by |alpha|
+                    #   SHORT → expect price to fall by |alpha|
+                    abs_alpha = abs(alpha)
+                    if direction == "LONG":
+                        tp_price = entry_price * (1.0 + abs_alpha)
+                        sl_price = entry_price * (1.0 - stop_loss)
+                    else:
+                        tp_price = entry_price * (1.0 - abs_alpha)
+                        sl_price = entry_price * (1.0 + stop_loss)
+
                     trade = Trade(
                         ticker=ticker,
                         commodity=commod,
@@ -403,6 +437,9 @@ def run_backtest(
                         entry_date=t,
                         entry_price=entry_price,
                         size=size,
+                        alpha_at_entry=abs_alpha,
+                        take_profit_price=tp_price,
+                        stop_loss_price=sl_price,
                     )
                     portfolio.open_position(trade)
 
