@@ -11,6 +11,11 @@ For each trading day t (from day `lookback` onward):
   3. Alpha signal            : Expected = β × shock_return
                                Alpha    = Expected − cumulative residual
   4. Portfolio management    : open/close positions, mark-to-market daily
+  5. Rebalancing (every N days):
+       - Re-evaluate every open position's alpha signal
+       - Adjust size up/down in-place (NO close + reopen)
+       - Cancel and replace TP/SL from current price + residual alpha
+       - Close if: signal gone, alpha < threshold, or direction reversed
 
 Output:
   BacktestResult with daily P&L per commodity, closed trades list,
@@ -44,12 +49,16 @@ class Trade:
     exit_price: Optional[float] = None
     size: float = 1.0       # fraction of portfolio (e.g. 0.03)
     pnl_pct: float = 0.0
-    exit_reason: str = ""   # "take_profit" | "stop_loss" | "expired" | "open"
+    exit_reason: str = ""   # "take_profit" | "stop_loss" | "expired" | "rebalance_*" | "open"
 
-    # Alpha-linked exit levels (set at entry)
-    alpha_at_entry: float = 0.0              # |alpha| used to compute fair-value TP
-    take_profit_price: Optional[float] = None  # price at which alpha = 0 (fully priced)
-    stop_loss_price: Optional[float] = None    # price at max drawdown % from entry
+    # Alpha-linked exit levels — cancelled and replaced at each rebalancing
+    alpha_at_entry: float = 0.0              # |alpha| at last sizing event
+    take_profit_price: Optional[float] = None  # α=0 fair-value target (current price basis)
+    stop_loss_price: Optional[float] = None    # trailing max-drawdown guard
+
+    # Rebalancing tracking
+    rebalance_count: int = 0
+    last_rebalance_date: Optional[pd.Timestamp] = None
 
     @property
     def is_open(self) -> bool:
@@ -134,6 +143,177 @@ def _capm_residuals(
     return (y - fitted).rename(stock_ret.name)
 
 
+# ── Rebalancing ────────────────────────────────────────────────────────────────
+
+def _rebalance_portfolio(
+    portfolio: "Portfolio",
+    current_date: pd.Timestamp,
+    prices: pd.Series,
+    betas: Dict[Tuple[str, str], pd.Series],
+    residuals: Dict[str, pd.Series],
+    commodity_returns: pd.DataFrame,
+    commod_vol: pd.DataFrame,
+    risk_cfg: dict,
+    min_alpha: float,
+    max_alpha: float,
+    min_amp: float,
+    min_z: float,
+    stop_loss_pct: float,
+    max_age: int,
+    ar_ratio: float,
+) -> None:
+    """
+    Re-evaluate every open position and adjust in-place.
+
+    Rules (applied in order):
+      1. No price data              → skip (keep position unchanged)
+      2. Signal reversed direction  → close  (reason: rebalance_direction_reversed)
+      3. Shock faded (amp < min)    → close  (reason: rebalance_shock_faded)
+      4. Alpha below threshold      → close  (reason: rebalance_alpha_expired)
+      5. Already fully priced       → close  (reason: rebalance_already_priced)
+      6. Otherwise                  → adjust size up/down IN-PLACE
+                                      cancel + replace TP/SL from current price
+
+    TP/SL replacement logic:
+      - TP = current_price × (1 ± residual_alpha)   [remaining gap to fair value]
+      - SL = current_price × (1 ∓ stop_loss_pct)    [trailing stop protects gains]
+
+    IMPORTANT: positions are NEVER closed then re-opened — only size is mutated.
+    """
+    max_pos    = risk_cfg.get("max_position_pct", 0.05)
+    target_risk = risk_cfg.get("target_position_risk_pct", 0.01)
+    ref_sr     = risk_cfg.get("reference_sharpe", 0.50)
+    max_boost  = risk_cfg.get("max_signal_boost", 2.0)
+
+    still_open: List[Trade] = []
+
+    for trade in portfolio.open_trades:
+        # ── 1. No price → keep as-is ────────────────────────────────────────
+        if trade.ticker not in prices or np.isnan(prices[trade.ticker]):
+            still_open.append(trade)
+            continue
+
+        current_price = prices[trade.ticker]
+        commod = trade.commodity
+
+        # ── Re-compute beta at current date ─────────────────────────────────
+        beta_series = betas.get((trade.ticker, commod))
+        if beta_series is None or current_date not in beta_series.index:
+            still_open.append(trade)
+            continue
+        beta_val = beta_series.loc[current_date]
+        if np.isnan(beta_val) or beta_val == 0:
+            still_open.append(trade)
+            continue
+
+        # ── Find most recent shock in widened lookback window ────────────────
+        # Use max_age*2 so a position opened on day 1 is still evaluated on day 9
+        lookback_window = max_age * 2
+        recent_commod = commodity_returns.loc[:current_date][commod].dropna().iloc[-lookback_window:]
+        if len(recent_commod) < 2:
+            trade.close(current_date, current_price, "rebalance_shock_faded")
+            portfolio.closed_trades.append(trade)
+            continue
+
+        shock_ret = recent_commod.iloc[-1]
+        shock_amp = abs(shock_ret)
+
+        # ── 3. Shock too small → close ───────────────────────────────────────
+        if shock_amp < min_amp:
+            trade.close(current_date, current_price, "rebalance_shock_faded")
+            portfolio.closed_trades.append(trade)
+            continue
+
+        # ── Re-compute alpha: cumulative residual since position entry ────────
+        resid_series = residuals.get(trade.ticker)
+        if resid_series is None:
+            still_open.append(trade)
+            continue
+
+        # Residuals accumulated since entry (the "actual reaction" since shock)
+        resid_since_entry = resid_series.loc[
+            (resid_series.index >= trade.entry_date) &
+            (resid_series.index <= current_date)
+        ]
+        actual_reaction = float(resid_since_entry.sum()) if len(resid_since_entry) > 0 else 0.0
+
+        expected   = beta_val * shock_ret
+        new_alpha  = expected - actual_reaction
+        abs_alpha  = abs(new_alpha)
+        new_dir    = "LONG" if new_alpha > 0 else "SHORT"
+
+        # ── 2. Direction reversed → close ────────────────────────────────────
+        if new_dir != trade.direction:
+            trade.close(current_date, current_price, "rebalance_direction_reversed")
+            portfolio.closed_trades.append(trade)
+            continue
+
+        # ── 4. Alpha below threshold → close ─────────────────────────────────
+        if abs_alpha < min_alpha:
+            trade.close(current_date, current_price, "rebalance_alpha_expired")
+            portfolio.closed_trades.append(trade)
+            continue
+
+        # ── 5. Already fully priced → close ──────────────────────────────────
+        if expected != 0 and actual_reaction / expected >= ar_ratio:
+            trade.close(current_date, current_price, "rebalance_already_priced")
+            portfolio.closed_trades.append(trade)
+            continue
+
+        # ── 6. Adjust size + cancel/replace TP/SL ────────────────────────────
+
+        # New sizing (same CML formula as entry)
+        resid_s = residuals.get(trade.ticker)
+        if resid_s is not None:
+            recent_r = resid_s.loc[:current_date].iloc[-63:]
+            sigma_annual = float(recent_r.std() * np.sqrt(252)) if len(recent_r) > 5 else 0.25
+        else:
+            sigma_annual = 0.25
+        sigma_annual = max(sigma_annual, 0.05)
+        sigma_hold   = sigma_annual * np.sqrt(max_age / 252)
+        sigma_hold   = max(sigma_hold, 1e-4)
+
+        sharpe_signal = abs_alpha / sigma_hold
+        base_size     = float(np.clip(target_risk / sigma_annual, 0.0, max_pos))
+        boost         = float(np.clip(sharpe_signal / ref_sr, 0.0, max_boost))
+
+        vol_today = commod_vol.loc[current_date, commod] if current_date in commod_vol.index else np.nan
+        if np.isnan(vol_today) or vol_today == 0:
+            gate = 0.5
+        else:
+            shock_z = shock_amp / vol_today
+            if shock_z < min_z:
+                # z-score too low → close
+                trade.close(current_date, current_price, "rebalance_shock_faded")
+                portfolio.closed_trades.append(trade)
+                continue
+            gate = float(np.clip((shock_amp / 0.05) / 2 * np.tanh(shock_z / 2), 0, 1))
+
+        new_size = float(np.clip(base_size * boost * gate, 0.005, max_pos))
+
+        # ── Cancel old TP/SL and replace from current price ──────────────────
+        # TP  = current_price × (1 ± residual_alpha)   remaining gap to fair value
+        # SL  = current_price × (1 ∓ stop_loss_pct)    trailing stop (protects gains)
+        if trade.direction == "LONG":
+            new_tp = current_price * (1.0 + abs_alpha)
+            new_sl = current_price * (1.0 - stop_loss_pct)
+        else:
+            new_tp = current_price * (1.0 - abs_alpha)
+            new_sl = current_price * (1.0 + stop_loss_pct)
+
+        # Mutate in-place — no close/reopen
+        trade.size               = new_size
+        trade.alpha_at_entry     = abs_alpha
+        trade.take_profit_price  = new_tp
+        trade.stop_loss_price    = new_sl
+        trade.rebalance_count   += 1
+        trade.last_rebalance_date = current_date
+
+        still_open.append(trade)
+
+    portfolio.open_trades = still_open
+
+
 # ── Portfolio ──────────────────────────────────────────────────────────────────
 
 class Portfolio:
@@ -155,14 +335,14 @@ class Portfolio:
     def update(
         self,
         current_date: pd.Timestamp,
-        prices: pd.Series,       # ticker → current price
+        prices: pd.Series,
     ) -> Dict[str, float]:
         """
         Mark-to-market all open positions.
 
         Exit logic:
           - Take Profit : price reaches α=0 fair-value (trade.take_profit_price)
-          - Stop Loss   : price crosses max-drawdown threshold (trade.stop_loss_price)
+          - Stop Loss   : price crosses trailing max-drawdown threshold
           - Expiry      : held for max_holding days
 
         Returns dict of commodity → daily P&L contribution.
@@ -178,9 +358,8 @@ class Portfolio:
             current_price = prices[trade.ticker]
             days_held = (current_date - trade.entry_date).days
 
-            # Check exit conditions using absolute price levels
             hit_stop = False
-            hit_tp = False
+            hit_tp   = False
 
             if trade.stop_loss_price is not None:
                 if trade.direction == "LONG":
@@ -205,8 +384,7 @@ class Portfolio:
                 self.closed_trades.append(trade)
             else:
                 still_open.append(trade)
-                # Daily contribution: size × signed daily stock return
-                raw_ret = current_price / trade.entry_price - 1
+                raw_ret    = current_price / trade.entry_price - 1
                 signed_ret = raw_ret if trade.direction == "LONG" else -raw_ret
                 c = trade.commodity
                 daily_pnl[c] = daily_pnl.get(c, 0.0) + trade.size * signed_ret
@@ -241,31 +419,31 @@ def run_backtest(
     Run walk-forward backtest of the Lone Star strategy.
 
     Args:
-        stock_returns   : DataFrame [dates × tickers]
-        stock_prices    : DataFrame [dates × tickers] (for P&L)
+        stock_returns    : DataFrame [dates × tickers]
+        stock_prices     : DataFrame [dates × tickers] (for P&L)
         commodity_returns: DataFrame [dates × commodities]
-        market_returns  : Series of market returns (for CAPM residuals)
-        stock_metadata  : DataFrame(ticker → zone, primary_commodity, role)
-        cfg             : Full strategy config dict
-        step_days       : Re-generate signals every N days (1=daily, 5=weekly)
+        market_returns   : Series of market returns (for CAPM residuals)
+        stock_metadata   : DataFrame(ticker → zone, primary_commodity, role)
+        cfg              : Full strategy config dict
+        step_days        : Re-generate NEW signals every N days (1=daily)
     """
     beta_cfg   = cfg["beta"]
     shock_cfg  = cfg["shock"]
     alpha_cfg  = cfg["alpha"]
     risk_cfg   = cfg["risk"]
 
-    lookback   = beta_cfg.get("rolling_window", 252)
-    min_r2_thr = beta_cfg.get("min_r_squared", 0.05)
-    max_age    = shock_cfg.get("max_age_days", 5)
-    min_amp    = shock_cfg.get("min_amplitude_pct", 1.5) / 100
-    min_z      = shock_cfg.get("min_zscore", 1.5)
-    vol_window = shock_cfg.get("lookback_vol_days", 63)
-    min_alpha  = alpha_cfg.get("min_alpha_pct", 0.5) / 100
-    max_alpha  = alpha_cfg.get("max_alpha_pct", 15.0) / 100
-    stop_loss  = risk_cfg.get("stop_loss_pct", 0.05)
-    max_hold   = risk_cfg.get("max_holding_days", 10)
-    max_pos    = risk_cfg.get("max_position_pct", 0.05)
-    ar_ratio   = alpha_cfg.get("already_priced_ratio", 0.85)
+    lookback    = beta_cfg.get("rolling_window", 252)
+    max_age     = shock_cfg.get("max_age_days", 5)
+    min_amp     = shock_cfg.get("min_amplitude_pct", 1.5) / 100
+    min_z       = shock_cfg.get("min_zscore", 1.5)
+    vol_window  = shock_cfg.get("lookback_vol_days", 63)
+    min_alpha   = alpha_cfg.get("min_alpha_pct", 0.5) / 100
+    max_alpha   = alpha_cfg.get("max_alpha_pct", 15.0) / 100
+    stop_loss   = risk_cfg.get("stop_loss_pct", 0.05)
+    max_hold    = risk_cfg.get("max_holding_days", 10)
+    max_pos     = risk_cfg.get("max_position_pct", 0.05)
+    ar_ratio    = alpha_cfg.get("already_priced_ratio", 0.85)
+    rebal_freq  = risk_cfg.get("rebalancing_frequency_days", 2)
 
     commodities = list(commodity_returns.columns)
 
@@ -279,10 +457,8 @@ def run_backtest(
 
     for ticker in stocks_available:
         s_ret = stock_returns[ticker].dropna()
-        # CAPM residuals
         resid = _capm_residuals(s_ret, market_returns.reindex(s_ret.index).fillna(0), lookback)
         residuals[ticker] = resid
-        # Commodity betas
         for commod in commodities:
             c_ret = commodity_returns[commod].dropna()
             b = _rolling_beta(s_ret, c_ret, lookback)
@@ -295,25 +471,44 @@ def run_backtest(
 
     # ── Simulation dates ───────────────────────────────────────────────────
     common_dates = stock_returns.index.intersection(commodity_returns.index)
-    sim_dates = common_dates[lookback:]
+    sim_dates    = common_dates[lookback:]
 
     portfolio = Portfolio(stop_loss, max_hold)
 
-    # daily P&L per commodity
-    all_cols = commodities + ["combined"]
+    all_cols       = commodities + ["combined"]
     daily_pnl_rows = []
 
-    print(f"  [BT] Simulating {len(sim_dates)} days...", end=" ", flush=True)
+    print(f"  [BT] Simulating {len(sim_dates)} days "
+          f"(rebalance every {rebal_freq}d)...", end=" ", flush=True)
 
     for i, t in enumerate(sim_dates):
         prices_today = stock_prices.loc[t] if t in stock_prices.index else pd.Series(dtype=float)
 
-        # Mark-to-market existing positions
+        # ── 1. Rebalance open positions (every rebal_freq days) ───────────
+        if i > 0 and i % rebal_freq == 0 and portfolio.open_trades:
+            _rebalance_portfolio(
+                portfolio       = portfolio,
+                current_date    = t,
+                prices          = prices_today,
+                betas           = betas,
+                residuals       = residuals,
+                commodity_returns = commodity_returns,
+                commod_vol      = commod_vol,
+                risk_cfg        = risk_cfg,
+                min_alpha       = min_alpha,
+                max_alpha       = max_alpha,
+                min_amp         = min_amp,
+                min_z           = min_z,
+                stop_loss_pct   = stop_loss,
+                max_age         = max_age,
+                ar_ratio        = ar_ratio,
+            )
+
+        # ── 2. Mark-to-market (TP/SL/expiry checks) ──────────────────────
         pnl_today = portfolio.update(t, prices_today)
 
-        # Generate new signals every `step_days`
+        # ── 3. Generate NEW signals every step_days ───────────────────────
         if i % step_days == 0:
-            # Detect shocks in last max_age days
             recent_commod = commodity_returns.loc[:t].iloc[-(max_age + 1):]
 
             for commod in commodities:
@@ -321,7 +516,6 @@ def run_backtest(
                 if len(c_series) < 2:
                     continue
 
-                # Most recent shock
                 shock_ret = c_series.iloc[-1]
                 shock_amp = abs(shock_ret)
                 if shock_amp < min_amp:
@@ -338,7 +532,6 @@ def run_backtest(
                     (shock_amp / 0.05) / 2 * np.tanh(shock_z / 2), 0, 1
                 ))
 
-                # For each stock with primary_commodity == commod
                 if stock_metadata.empty:
                     continue
                 relevant = stock_metadata[
@@ -349,7 +542,6 @@ def run_backtest(
                     if ticker not in stocks_available:
                         continue
 
-                    # Get rolling beta at time t
                     beta_series = betas.get((ticker, commod))
                     if beta_series is None or t not in beta_series.index:
                         continue
@@ -357,57 +549,42 @@ def run_backtest(
                     if np.isnan(beta_val) or beta_val == 0:
                         continue
 
-                    # Cumulative residual (last max_age days)
                     resid_series = residuals.get(ticker)
                     if resid_series is None:
                         continue
-                    recent_resid = resid_series.loc[:t].iloc[-max_age:]
+                    recent_resid   = resid_series.loc[:t].iloc[-max_age:]
                     actual_reaction = float(recent_resid.sum())
 
-                    # Alpha
                     expected = beta_val * shock_ret
-                    alpha = expected - actual_reaction
+                    alpha    = expected - actual_reaction
 
-                    # Filters
                     if abs(alpha) < min_alpha or abs(alpha) > max_alpha:
                         continue
-                    if (expected != 0 and
-                            actual_reaction / expected >= ar_ratio):
+                    if expected != 0 and actual_reaction / expected >= ar_ratio:
                         continue
 
                     direction = "LONG" if alpha > 0 else "SHORT"
 
-                    # ── CML + risk-parity sizing ─────────────────────────────
-                    # σ_résiduel: rolling 63-day std of CAPM residuals (annualised)
+                    # CML sizing
                     resid_s = residuals.get(ticker)
                     if resid_s is not None:
-                        recent_r = resid_s.loc[:t].iloc[-63:]
+                        recent_r     = resid_s.loc[:t].iloc[-63:]
                         sigma_annual = float(recent_r.std() * np.sqrt(252)) if len(recent_r) > 5 else 0.25
                     else:
-                        sigma_annual = 0.25  # 25% default if no data
+                        sigma_annual = 0.25
 
-                    sigma_annual = max(sigma_annual, 0.05)  # floor at 5%
-
-                    # σ over holding period
-                    sigma_hold = sigma_annual * np.sqrt(max_age / 252)
-                    sigma_hold = max(sigma_hold, 1e-4)
-
-                    # Sharpe of the signal
+                    sigma_annual  = max(sigma_annual, 0.05)
+                    sigma_hold    = sigma_annual * np.sqrt(max_age / 252)
+                    sigma_hold    = max(sigma_hold, 1e-4)
                     sharpe_signal = abs(alpha) / sigma_hold
 
-                    # Base size: target 1% annual idiosyncratic risk per position
                     target_risk = risk_cfg.get("target_position_risk_pct", 0.01)
-                    base_size = float(np.clip(target_risk / sigma_annual, 0.0, max_pos))
-
-                    # CML boost: signal quality vs reference SR
-                    ref_sr   = risk_cfg.get("reference_sharpe", 0.50)
-                    max_boost = risk_cfg.get("max_signal_boost", 2.0)
-                    boost = float(np.clip(sharpe_signal / ref_sr, 0.0, max_boost))
-
-                    # Shock quality score [0, 1] as composite gate
-                    gate = float(np.clip(shock_score, 0.0, 1.0))
-
-                    size = float(np.clip(base_size * boost * gate, 0.005, max_pos))
+                    base_size   = float(np.clip(target_risk / sigma_annual, 0.0, max_pos))
+                    ref_sr      = risk_cfg.get("reference_sharpe", 0.50)
+                    max_boost   = risk_cfg.get("max_signal_boost", 2.0)
+                    boost       = float(np.clip(sharpe_signal / ref_sr, 0.0, max_boost))
+                    gate        = float(np.clip(shock_score, 0.0, 1.0))
+                    size        = float(np.clip(base_size * boost * gate, 0.005, max_pos))
 
                     if t not in stock_prices.index or ticker not in stock_prices.columns:
                         continue
@@ -415,13 +592,9 @@ def run_backtest(
                     if np.isnan(entry_price) or entry_price <= 0:
                         continue
 
-                    role = stock_metadata.loc[ticker, "role"] if ticker in stock_metadata.index else ""
-
-                    # ── Alpha-linked exit levels ─────────────────────────────
-                    # Take Profit: price at which the gap (α=0) is fully priced
-                    #   LONG  → expect price to rise by |alpha|
-                    #   SHORT → expect price to fall by |alpha|
+                    role      = stock_metadata.loc[ticker, "role"] if ticker in stock_metadata.index else ""
                     abs_alpha = abs(alpha)
+
                     if direction == "LONG":
                         tp_price = entry_price * (1.0 + abs_alpha)
                         sl_price = entry_price * (1.0 - stop_loss)
@@ -430,16 +603,16 @@ def run_backtest(
                         sl_price = entry_price * (1.0 + stop_loss)
 
                     trade = Trade(
-                        ticker=ticker,
-                        commodity=commod,
-                        direction=direction,
-                        role=role,
-                        entry_date=t,
-                        entry_price=entry_price,
-                        size=size,
-                        alpha_at_entry=abs_alpha,
-                        take_profit_price=tp_price,
-                        stop_loss_price=sl_price,
+                        ticker             = ticker,
+                        commodity          = commod,
+                        direction          = direction,
+                        role               = role,
+                        entry_date         = t,
+                        entry_price        = entry_price,
+                        size               = size,
+                        alpha_at_entry     = abs_alpha,
+                        take_profit_price  = tp_price,
+                        stop_loss_price    = sl_price,
                     )
                     portfolio.open_position(trade)
 
@@ -459,32 +632,30 @@ def run_backtest(
     if not daily_pnl_rows:
         empty_df = pd.DataFrame(columns=all_cols)
         return BacktestResult(
-            daily_pnl=empty_df,
-            monthly_returns=empty_df,
-            trades=[],
-            nav_weights={},
-            start_date=sim_dates[0] if len(sim_dates) else pd.Timestamp.today(),
-            end_date=sim_dates[-1] if len(sim_dates) else pd.Timestamp.today(),
+            daily_pnl      = empty_df,
+            monthly_returns = empty_df,
+            trades         = [],
+            nav_weights    = {},
+            start_date     = sim_dates[0] if len(sim_dates) else pd.Timestamp.today(),
+            end_date       = sim_dates[-1] if len(sim_dates) else pd.Timestamp.today(),
         )
 
     pnl_df = pd.DataFrame(daily_pnl_rows).set_index("date")[all_cols]
 
-    # Monthly returns
     monthly = (1 + pnl_df).resample("ME").prod() - 1
     monthly.index = monthly.index.to_period("M")
 
-    # NAV weights: proportion of total trades by commodity
     trade_counts = {}
-    for t in portfolio.all_trades:
-        trade_counts[t.commodity] = trade_counts.get(t.commodity, 0) + 1
+    for tr in portfolio.all_trades:
+        trade_counts[tr.commodity] = trade_counts.get(tr.commodity, 0) + 1
     total_trades = max(sum(trade_counts.values()), 1)
-    nav_weights = {c: trade_counts.get(c, 0) / total_trades for c in commodities}
+    nav_weights  = {c: trade_counts.get(c, 0) / total_trades for c in commodities}
 
     return BacktestResult(
-        daily_pnl=pnl_df,
-        monthly_returns=monthly,
-        trades=portfolio.all_trades,
-        nav_weights=nav_weights,
-        start_date=sim_dates[0],
-        end_date=sim_dates[-1],
+        daily_pnl       = pnl_df,
+        monthly_returns = monthly,
+        trades          = portfolio.all_trades,
+        nav_weights     = nav_weights,
+        start_date      = sim_dates[0],
+        end_date        = sim_dates[-1],
     )

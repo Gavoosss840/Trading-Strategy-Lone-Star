@@ -268,6 +268,27 @@ risk:
   reference_sharpe: 0.50          # Boost = 1× at SR=0.50, 2× at SR=1.0
   max_signal_boost: 2.0           # Cap boost at 2× (prevents over-concentration)
 
+  # ── Rebalancing ────────────────────────────────
+  # Re-evaluate every open position every N trading days.
+  # Recommended: 2 days (alpha halflife = 3d, shock max age = 5d).
+  # At each rebalance: adjust size in-place, replace TP/SL from current price.
+  # Never close + reopen — only mutate the existing position.
+  rebalancing_frequency_days: 2
+
+# ── Execution (live trading / IBKR) ───────────
+execution:
+  # Portfolio NAV in USD — used to compute whole-share quantities.
+  # Update this before each live run to reflect your actual account value.
+  nav_total: 10000
+
+  # IBKR does not support fractional shares via API.
+  # When floor(target_dollars / price) == 0, the signal goes to manual_orders report.
+  ibkr_fractional_shares: false
+
+  # Orders with target notional below this threshold go to manual report.
+  # (Avoids placing very small odd-lot orders)
+  min_order_notional_usd: 100
+
 # ── Output ────────────────────────────────────
 output:
   top_n_signals: 10
