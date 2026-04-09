@@ -89,25 +89,48 @@ stocks:
     - { ticker: "TOU.TO",   name: "Tourmaline Oil (CA)",     primary_commodity: natural_gas, role: producer }
     - { ticker: "ARC.TO",   name: "ARC Resources (CA)",      primary_commodity: natural_gas, role: producer }
 
-    # ── Gold — Producers ────────────────────
-    - { ticker: "NEM",  name: "Newmont",                 primary_commodity: gold,        role: producer }
-    - { ticker: "GOLD", name: "Barrick Gold",            primary_commodity: gold,        role: producer }
-    - { ticker: "AEM",  name: "Agnico Eagle",            primary_commodity: gold,        role: producer }
-    - { ticker: "KGC",  name: "Kinross Gold",            primary_commodity: gold,        role: producer }
-    - { ticker: "FNV",  name: "Franco-Nevada (streaming)", primary_commodity: gold,      role: producer }
-    - { ticker: "WPM",  name: "Wheaton Precious Metals", primary_commodity: gold,        role: producer }
-    - { ticker: "RGLD", name: "Royal Gold (streaming)",  primary_commodity: gold,        role: producer }
+    # ── Gold — Producers (GDX / GDXJ reference) ──
+    - { ticker: "NEM",    name: "Newmont",                       primary_commodity: gold,   role: producer }
+    - { ticker: "GOLD",   name: "Barrick Gold (CA)",             primary_commodity: gold,   role: producer }
+    - { ticker: "AEM",    name: "Agnico Eagle (CA)",             primary_commodity: gold,   role: producer }
+    - { ticker: "KGC",    name: "Kinross Gold (CA)",             primary_commodity: gold,   role: producer }
+    - { ticker: "FNV",    name: "Franco-Nevada (streaming,CA)",  primary_commodity: gold,   role: producer }
+    - { ticker: "WPM",    name: "Wheaton Precious Metals (CA)",  primary_commodity: gold,   role: producer }
+    - { ticker: "RGLD",   name: "Royal Gold (streaming)",        primary_commodity: gold,   role: producer }
+    - { ticker: "AU",     name: "AngloGold Ashanti (NYSE)",      primary_commodity: gold,   role: producer }
+    - { ticker: "GFI",    name: "Gold Fields ADR (ZA)",          primary_commodity: gold,   role: producer }
+    - { ticker: "HMY",    name: "Harmony Gold ADR (ZA)",         primary_commodity: gold,   role: producer }
+    - { ticker: "AGI",    name: "Alamos Gold (CA)",              primary_commodity: gold,   role: producer }
+    - { ticker: "IAG",    name: "IAMGOLD (CA)",                  primary_commodity: gold,   role: producer }
+    - { ticker: "EQX",    name: "Equinox Gold (CA)",             primary_commodity: gold,   role: producer }
+    - { ticker: "BTG",    name: "B2Gold Corp (CA)",              primary_commodity: gold,   role: producer }
+    - { ticker: "EGO",    name: "Eldorado Gold (CA)",            primary_commodity: gold,   role: producer }
+    - { ticker: "SSRM",   name: "SSR Mining (CA)",               primary_commodity: gold,   role: producer }
+    - { ticker: "OR",     name: "Osisko Gold Royalties (CA)",    primary_commodity: gold,   role: producer }
+    - { ticker: "EDV.TO", name: "Endeavour Mining (TSX)",        primary_commodity: gold,   role: producer }
 
-    # ── Silver — Producers ──────────────────
-    - { ticker: "PAAS", name: "Pan American Silver",     primary_commodity: silver,      role: producer }
-    - { ticker: "AG",   name: "First Majestic Silver",   primary_commodity: silver,      role: producer }
-    - { ticker: "HL",   name: "Hecla Mining",            primary_commodity: silver,      role: producer }
+    # ── Silver — Producers (SIL / SILJ reference) ──
+    - { ticker: "PAAS",   name: "Pan American Silver (CA)",      primary_commodity: silver, role: producer }
+    - { ticker: "AG",     name: "First Majestic Silver (CA)",    primary_commodity: silver, role: producer }
+    - { ticker: "HL",     name: "Hecla Mining",                  primary_commodity: silver, role: producer }
+    - { ticker: "CDE",    name: "Coeur Mining",                  primary_commodity: silver, role: producer }
+    - { ticker: "FSM",    name: "Fortuna Mining (CA)",           primary_commodity: silver, role: producer }
+    - { ticker: "EXK",    name: "Endeavour Silver (CA)",         primary_commodity: silver, role: producer }
+    - { ticker: "BVN",    name: "Buenaventura (PE)",             primary_commodity: silver, role: producer }
+    - { ticker: "TFPM",   name: "Triple Flag Precious Metals (CA)", primary_commodity: silver, role: producer }
+    - { ticker: "MUX",    name: "McEwen Mining (CA)",            primary_commodity: silver, role: producer }
 
-    # ── Copper — Producers ──────────────────
-    - { ticker: "FCX",  name: "Freeport-McMoRan",        primary_commodity: copper,      role: producer }
-    - { ticker: "SCCO", name: "Southern Copper",         primary_commodity: copper,      role: producer }
-    - { ticker: "VALE", name: "Vale S.A. (BR)",          primary_commodity: copper,      role: producer }
-    - { ticker: "TECK", name: "Teck Resources (CA)",     primary_commodity: copper,      role: producer }
+    # ── Copper — Producers (COPX reference) ──
+    - { ticker: "FCX",    name: "Freeport-McMoRan",              primary_commodity: copper, role: producer }
+    - { ticker: "SCCO",   name: "Southern Copper",               primary_commodity: copper, role: producer }
+    - { ticker: "VALE",   name: "Vale S.A. (BR)",                primary_commodity: copper, role: producer }
+    - { ticker: "TECK",   name: "Teck Resources (CA)",           primary_commodity: copper, role: producer }
+    - { ticker: "HBM",    name: "Hudbay Minerals (CA)",          primary_commodity: copper, role: producer }
+    - { ticker: "ERO",    name: "Ero Copper (CA)",               primary_commodity: copper, role: producer }
+    - { ticker: "IVN.TO", name: "Ivanhoe Mines (TSX)",           primary_commodity: copper, role: producer }
+    - { ticker: "FM.TO",  name: "First Quantum Minerals (TSX)",  primary_commodity: copper, role: producer }
+    - { ticker: "LUN.TO", name: "Lundin Mining (TSX)",           primary_commodity: copper, role: producer }
+    - { ticker: "CS.TO",  name: "Capstone Copper (TSX)",         primary_commodity: copper, role: producer }
 
   # ══════════════════════════════════════════
   #  EUROPE  — NYSE-listed + liquid OTC ADRs
@@ -123,10 +146,14 @@ stocks:
     - { ticker: "REPYY", name: "Repsol ADR (ES)",        primary_commodity: crude_oil,   role: producer }
     - { ticker: "FTI",   name: "TechnipFMC (FR/UK)",     primary_commodity: crude_oil,   role: producer }
 
-    # ── Mining — Producers ──────────────────
-    - { ticker: "RIO",   name: "Rio Tinto (UK/AU)",      primary_commodity: copper,      role: producer }
-    - { ticker: "GLNCY", name: "Glencore ADR (CH)",      primary_commodity: copper,      role: producer }
-    - { ticker: "NGLOY", name: "Anglo American ADR (UK)", primary_commodity: copper,     role: producer }
+    # ── Copper — Producers ──────────────────
+    - { ticker: "RIO",    name: "Rio Tinto (UK/AU)",          primary_commodity: copper, role: producer }
+    - { ticker: "GLNCY",  name: "Glencore ADR (CH)",          primary_commodity: copper, role: producer }
+    - { ticker: "NGLOY",  name: "Anglo American ADR (UK)",    primary_commodity: copper, role: producer }
+    - { ticker: "ANTO.L", name: "Antofagasta (LSE, CL)",      primary_commodity: copper, role: producer }
+
+    # ── Silver — Producers ──────────────────
+    - { ticker: "FRES.L", name: "Fresnillo (LSE, MX)",        primary_commodity: silver, role: producer }
 
   # ══════════════════════════════════════════
   #  MIDDLE EAST  — 1 stock
@@ -154,10 +181,21 @@ stocks:
     - { ticker: "WDS",      name: "Woodside Energy (AU)",  primary_commodity: natural_gas, role: producer }
     - { ticker: "1088.HK",  name: "China Shenhua (HK)",   primary_commodity: natural_gas, role: producer }
 
-    # ── Mining — Producers ──────────────────
-    - { ticker: "BHP",      name: "BHP Group (AU/NYSE)",   primary_commodity: copper,      role: producer }
-    - { ticker: "FMG.AX",   name: "Fortescue (ASX)",      primary_commodity: copper,      role: producer }
-    - { ticker: "NST.AX",   name: "Northern Star (ASX)",  primary_commodity: gold,        role: producer }
+    # ── Gold — Producers ────────────────────
+    - { ticker: "NST.AX",    name: "Northern Star (ASX)",       primary_commodity: gold,   role: producer }
+    - { ticker: "EVN.AX",    name: "Evolution Mining (ASX)",    primary_commodity: gold,   role: producer }
+    - { ticker: "1818.HK",   name: "Zhaojin Mining (HK)",       primary_commodity: gold,   role: producer }
+
+    # ── Silver — Producers ──────────────────
+    - { ticker: "010130.KS", name: "Korea Zinc (KRX)",          primary_commodity: silver, role: producer }
+
+    # ── Copper — Producers ──────────────────
+    - { ticker: "BHP",       name: "BHP Group (AU/NYSE)",       primary_commodity: copper, role: producer }
+    - { ticker: "FMG.AX",    name: "Fortescue (ASX)",           primary_commodity: copper, role: producer }
+    - { ticker: "2899.HK",   name: "Zijin Mining (HK)",         primary_commodity: copper, role: producer }
+    - { ticker: "0358.HK",   name: "Jiangxi Copper (HK)",       primary_commodity: copper, role: producer }
+    - { ticker: "5713.T",    name: "Sumitomo Metal Mining (JP)", primary_commodity: copper, role: producer }
+    - { ticker: "SFR.AX",    name: "Sandfire Resources (ASX)",  primary_commodity: copper, role: producer }
 
 # ── Data parameters ───────────────────────────
 data:
