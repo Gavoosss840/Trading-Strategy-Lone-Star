@@ -182,6 +182,50 @@ def get_market_returns(lookback_days: int = 504) -> pd.Series:
 
 # ── Convenience: full dataset bundle ─────────────────────────────────────────
 
+def download_volumes(
+    tickers: List[str],
+    lookback_days: int = 504,
+    progress: bool = False,
+) -> pd.DataFrame:
+    """
+    Download daily trading volume (shares) for a list of tickers.
+    Used for the ADV liquidity filter in the backtest engine.
+
+    Returns a DataFrame with dates as index and tickers as columns.
+    Missing tickers are silently dropped.
+    """
+    start, end = _date_range(lookback_days)
+    try:
+        import yfinance as yf
+        raw = yf.download(
+            tickers,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=progress,
+            threads=True,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        if "Volume" in raw.columns.get_level_values(0):
+            vol = raw["Volume"]
+        else:
+            return pd.DataFrame()
+    else:
+        if "Volume" in raw.columns:
+            vol = raw[["Volume"]]
+        else:
+            return pd.DataFrame()
+
+    vol = vol.ffill(limit=5).dropna(how="all")
+    missing = [t for t in tickers if t not in vol.columns or vol[t].isna().all()]
+    if missing:
+        warnings.warn(f"No volume data for: {missing}")
+    return vol.dropna(axis=1, how="all")
+
+
 def load_all_data(
     stock_tickers: List[str],
     commodity_config: Dict,
@@ -192,6 +236,7 @@ def load_all_data(
     One-shot loader that returns a bundle with:
       - stock_prices
       - stock_returns
+      - stock_volumes    (shares traded per day — for ADV filter)
       - commodity_returns
       - market_returns
       - risk_free_rate
@@ -205,6 +250,14 @@ def load_all_data(
 
     stock_prices = prices[[t for t in stock_tickers if t in prices.columns]]
     stock_returns = _to_returns(stock_prices)
+
+    # Download volumes only for stock tickers (not commodities / indices)
+    available_stock_tickers = [t for t in stock_tickers if t in prices.columns]
+    stock_volumes = download_volumes(
+        available_stock_tickers,
+        lookback_days=lookback_days,
+        progress=progress,
+    )
 
     commodity_ticker_map = {cfg["ticker"]: key for key, cfg in commodity_config.items()}
     commodity_prices_raw = prices[
@@ -231,6 +284,7 @@ def load_all_data(
     return {
         "stock_prices": stock_prices,
         "stock_returns": stock_returns,
+        "stock_volumes": stock_volumes,
         "commodity_returns": commodity_returns,
         "market_returns": market_returns,
         "risk_free_rate": risk_free,
