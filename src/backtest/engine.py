@@ -60,6 +60,17 @@ class Trade:
     rebalance_count: int = 0
     last_rebalance_date: Optional[pd.Timestamp] = None
 
+    # Daily P&L tracking — updated each mark-to-market step.
+    # Initialised to entry_price (slippage-adjusted) so day-1 P&L correctly
+    # reflects the entry spread cost.
+    last_price: Optional[float] = None
+
+    # Original shock preserved across rebalancings so the expected-alpha
+    # calculation always uses the shock that triggered the position, not
+    # the most recent commodity return.
+    original_shock_return: float = 0.0
+    shock_date: Optional[pd.Timestamp] = None
+
     @property
     def is_open(self) -> bool:
         return self.exit_date is None
@@ -111,16 +122,21 @@ def _rolling_beta(
     window: int,
 ) -> pd.Series:
     """
-    Vectorized rolling beta: β = cov(Y, X) / var(X).
-    Much faster than rolling OLS for backtesting.
+    EWMA beta: β = ewm_cov(Y, X) / ewm_var(X).
+
+    Exponentially-weighted covariance/variance gives more weight to recent
+    observations, making the beta estimate more responsive to regime changes
+    than a flat rolling window.  span=window keeps the effective memory
+    comparable to a simple rolling window of the same length.
     """
     aligned = pd.concat([stock_ret, commod_ret], axis=1).dropna()
-    if aligned.empty or len(aligned) < window:
+    min_periods = max(window // 4, 30)
+    if aligned.empty or len(aligned) < min_periods:
         return pd.Series(dtype=float)
     y = aligned.iloc[:, 0]
     x = aligned.iloc[:, 1]
-    roll_cov = y.rolling(window).cov(x)
-    roll_var = x.rolling(window).var()
+    roll_cov = y.ewm(span=window, min_periods=min_periods).cov(x)
+    roll_var = x.ewm(span=window, min_periods=min_periods).var()
     return (roll_cov / roll_var.replace(0, np.nan)).rename(
         f"beta_{stock_ret.name}_{commod_ret.name}"
     )
@@ -185,6 +201,7 @@ def _rebalance_portfolio(
     ref_sr     = risk_cfg.get("reference_sharpe", 0.50)
     max_boost  = risk_cfg.get("max_signal_boost", 2.0)
 
+    slippage_pct = portfolio.slippage_pct
     still_open: List[Trade] = []
 
     for trade in portfolio.open_trades:
@@ -206,21 +223,29 @@ def _rebalance_portfolio(
             still_open.append(trade)
             continue
 
-        # ── Find most recent shock in widened lookback window ────────────────
-        # Use max_age*2 so a position opened on day 1 is still evaluated on day 9
-        lookback_window = max_age * 2
-        recent_commod = commodity_returns.loc[:current_date][commod].dropna().iloc[-lookback_window:]
-        if len(recent_commod) < 2:
-            trade.close(current_date, current_price, "rebalance_shock_faded")
+        # ── Use ORIGINAL shock — not the most recent commodity return ────────
+        # The trade was opened because of a specific shock event.  Using the
+        # latest daily commodity return as "shock_ret" during rebalancing would
+        # randomly flip direction and corrupt the alpha calculation.
+        shock_ret = trade.original_shock_return
+        shock_amp = abs(shock_ret)
+
+        # Age check: close if original shock is too stale (max_age × 2 days)
+        days_since_shock = (
+            (current_date - trade.shock_date).days
+            if trade.shock_date is not None
+            else max_age * 2 + 1
+        )
+        if days_since_shock > max_age * 2:
+            eff = current_price * (1.0 - slippage_pct) if trade.direction == "LONG" else current_price * (1.0 + slippage_pct)
+            trade.close(current_date, eff, "rebalance_shock_faded")
             portfolio.closed_trades.append(trade)
             continue
 
-        shock_ret = recent_commod.iloc[-1]
-        shock_amp = abs(shock_ret)
-
-        # ── 3. Shock too small → close ───────────────────────────────────────
+        # ── 3. Original shock too small → close ─────────────────────────────
         if shock_amp < min_amp:
-            trade.close(current_date, current_price, "rebalance_shock_faded")
+            eff = current_price * (1.0 - slippage_pct) if trade.direction == "LONG" else current_price * (1.0 + slippage_pct)
+            trade.close(current_date, eff, "rebalance_shock_faded")
             portfolio.closed_trades.append(trade)
             continue
 
@@ -244,19 +269,22 @@ def _rebalance_portfolio(
 
         # ── 2. Direction reversed → close ────────────────────────────────────
         if new_dir != trade.direction:
-            trade.close(current_date, current_price, "rebalance_direction_reversed")
+            eff = current_price * (1.0 - slippage_pct) if trade.direction == "LONG" else current_price * (1.0 + slippage_pct)
+            trade.close(current_date, eff, "rebalance_direction_reversed")
             portfolio.closed_trades.append(trade)
             continue
 
         # ── 4. Alpha below threshold → close ─────────────────────────────────
         if abs_alpha < min_alpha:
-            trade.close(current_date, current_price, "rebalance_alpha_expired")
+            eff = current_price * (1.0 - slippage_pct) if trade.direction == "LONG" else current_price * (1.0 + slippage_pct)
+            trade.close(current_date, eff, "rebalance_alpha_expired")
             portfolio.closed_trades.append(trade)
             continue
 
         # ── 5. Already fully priced → close ──────────────────────────────────
         if expected != 0 and actual_reaction / expected >= ar_ratio:
-            trade.close(current_date, current_price, "rebalance_already_priced")
+            eff = current_price * (1.0 - slippage_pct) if trade.direction == "LONG" else current_price * (1.0 + slippage_pct)
+            trade.close(current_date, eff, "rebalance_already_priced")
             portfolio.closed_trades.append(trade)
             continue
 
@@ -284,7 +312,8 @@ def _rebalance_portfolio(
             shock_z = shock_amp / vol_today
             if shock_z < min_z:
                 # z-score too low → close
-                trade.close(current_date, current_price, "rebalance_shock_faded")
+                eff = current_price * (1.0 - slippage_pct) if trade.direction == "LONG" else current_price * (1.0 + slippage_pct)
+                trade.close(current_date, eff, "rebalance_shock_faded")
                 portfolio.closed_trades.append(trade)
                 continue
             gate = float(np.clip((shock_amp / 0.05) / 2 * np.tanh(shock_z / 2), 0, 1))
@@ -319,9 +348,15 @@ def _rebalance_portfolio(
 class Portfolio:
     """Tracks open positions and computes daily mark-to-market P&L."""
 
-    def __init__(self, stop_loss_pct: float, max_holding: int) -> None:
+    def __init__(
+        self,
+        stop_loss_pct: float,
+        max_holding: int,
+        slippage_pct: float = 0.001,
+    ) -> None:
         self.stop_loss_pct = stop_loss_pct
         self.max_holding = max_holding
+        self.slippage_pct = slippage_pct
         self.open_trades: List[Trade] = []
         self.closed_trades: List[Trade] = []
 
@@ -358,6 +393,11 @@ class Portfolio:
             current_price = prices[trade.ticker]
             days_held = (current_date - trade.entry_date).days
 
+            # Basis for today's incremental P&L.
+            # last_price is set to the slippage-adjusted entry price on day 1,
+            # so the entry spread cost is captured in the first day's return.
+            prev_price = trade.last_price if trade.last_price is not None else trade.entry_price
+
             hit_stop = False
             hit_tp   = False
 
@@ -373,21 +413,31 @@ class Portfolio:
                 else:
                     hit_tp = current_price <= trade.take_profit_price
 
-            if hit_stop:
-                trade.close(current_date, current_price, "stop_loss")
-                self.closed_trades.append(trade)
-            elif hit_tp:
-                trade.close(current_date, current_price, "take_profit")
-                self.closed_trades.append(trade)
-            elif days_held >= self.max_holding:
-                trade.close(current_date, current_price, "expired")
+            if hit_stop or hit_tp or days_held >= self.max_holding:
+                # Apply exit slippage: sell below market (LONG) / buy above market (SHORT)
+                if trade.direction == "LONG":
+                    exit_price = current_price * (1.0 - self.slippage_pct)
+                else:
+                    exit_price = current_price * (1.0 + self.slippage_pct)
+
+                # Record daily P&L from last mark-to-market to slippage-adjusted exit
+                raw_daily = exit_price / prev_price - 1
+                signed_daily = raw_daily if trade.direction == "LONG" else -raw_daily
+                c = trade.commodity
+                daily_pnl[c] = daily_pnl.get(c, 0.0) + trade.size * signed_daily
+
+                reason = "stop_loss" if hit_stop else ("take_profit" if hit_tp else "expired")
+                trade.close(current_date, exit_price, reason)
                 self.closed_trades.append(trade)
             else:
-                still_open.append(trade)
-                raw_ret    = current_price / trade.entry_price - 1
-                signed_ret = raw_ret if trade.direction == "LONG" else -raw_ret
+                # Still open — daily return from last_price to today's close (no slippage)
+                raw_daily = current_price / prev_price - 1
+                signed_daily = raw_daily if trade.direction == "LONG" else -raw_daily
                 c = trade.commodity
-                daily_pnl[c] = daily_pnl.get(c, 0.0) + trade.size * signed_ret
+                daily_pnl[c] = daily_pnl.get(c, 0.0) + trade.size * signed_daily
+
+                trade.last_price = current_price
+                still_open.append(trade)
 
         self.open_trades = still_open
         return daily_pnl
@@ -395,7 +445,12 @@ class Portfolio:
     def force_close_all(self, current_date: pd.Timestamp, prices: pd.Series) -> None:
         for trade in self.open_trades:
             if trade.ticker in prices and not np.isnan(prices[trade.ticker]):
-                trade.close(current_date, prices[trade.ticker], "end_of_backtest")
+                mkt = prices[trade.ticker]
+                if trade.direction == "LONG":
+                    exit_price = mkt * (1.0 - self.slippage_pct)
+                else:
+                    exit_price = mkt * (1.0 + self.slippage_pct)
+                trade.close(current_date, exit_price, "end_of_backtest")
                 self.closed_trades.append(trade)
         self.open_trades = []
 
@@ -414,6 +469,7 @@ def run_backtest(
     stock_metadata: pd.DataFrame,
     cfg: dict,
     step_days: int = 1,
+    stock_volumes: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     """
     Run walk-forward backtest of the Lone Star strategy.
@@ -427,10 +483,11 @@ def run_backtest(
         cfg              : Full strategy config dict
         step_days        : Re-generate NEW signals every N days (1=daily)
     """
-    beta_cfg   = cfg["beta"]
-    shock_cfg  = cfg["shock"]
-    alpha_cfg  = cfg["alpha"]
-    risk_cfg   = cfg["risk"]
+    beta_cfg      = cfg["beta"]
+    shock_cfg     = cfg["shock"]
+    alpha_cfg     = cfg["alpha"]
+    risk_cfg      = cfg["risk"]
+    execution_cfg = cfg.get("execution", {})
 
     lookback    = beta_cfg.get("rolling_window", 252)
     max_age     = shock_cfg.get("max_age_days", 5)
@@ -444,6 +501,11 @@ def run_backtest(
     max_pos     = risk_cfg.get("max_position_pct", 0.05)
     ar_ratio    = alpha_cfg.get("already_priced_ratio", 0.85)
     rebal_freq  = risk_cfg.get("rebalancing_frequency_days", 2)
+    max_commod_exp = risk_cfg.get("max_commodity_exposure", 0.20)
+
+    slippage_pct  = execution_cfg.get("slippage_pct", 0.001)
+    nav_total     = execution_cfg.get("nav_total", 10_000)
+    adv_filter_pct = execution_cfg.get("adv_filter_pct", 0.05)
 
     commodities = list(commodity_returns.columns)
 
@@ -473,7 +535,7 @@ def run_backtest(
     common_dates = stock_returns.index.intersection(commodity_returns.index)
     sim_dates    = common_dates[lookback:]
 
-    portfolio = Portfolio(stop_loss, max_hold)
+    portfolio = Portfolio(stop_loss, max_hold, slippage_pct)
 
     all_cols       = commodities + ["combined"]
     daily_pnl_rows = []
@@ -532,16 +594,11 @@ def run_backtest(
                     (shock_amp / 0.05) / 2 * np.tanh(shock_z / 2), 0, 1
                 ))
 
-                if stock_metadata.empty:
-                    continue
-                relevant = stock_metadata[
-                    stock_metadata.get("primary_commodity", pd.Series()) == commod
-                ] if "primary_commodity" in stock_metadata.columns else pd.DataFrame()
-
-                for ticker in relevant.index:
-                    if ticker not in stocks_available:
-                        continue
-
+                # ── Cross-commodity: consider ALL stocks, not just primary ones ──
+                # The beta dict already covers every (ticker, commodity) pair with
+                # sufficient history.  Filtering by primary_commodity would miss
+                # e.g. a nat-gas producer that also carries significant crude beta.
+                for ticker in stocks_available:
                     beta_series = betas.get((ticker, commod))
                     if beta_series is None or t not in beta_series.index:
                         continue
@@ -552,7 +609,7 @@ def run_backtest(
                     resid_series = residuals.get(ticker)
                     if resid_series is None:
                         continue
-                    recent_resid   = resid_series.loc[:t].iloc[-max_age:]
+                    recent_resid    = resid_series.loc[:t].iloc[-max_age:]
                     actual_reaction = float(recent_resid.sum())
 
                     expected = beta_val * shock_ret
@@ -564,6 +621,7 @@ def run_backtest(
                         continue
 
                     direction = "LONG" if alpha > 0 else "SHORT"
+                    abs_alpha = abs(alpha)
 
                     # CML sizing
                     resid_s = residuals.get(ticker)
@@ -576,7 +634,7 @@ def run_backtest(
                     sigma_annual  = max(sigma_annual, 0.05)
                     sigma_hold    = sigma_annual * np.sqrt(max_age / 252)
                     sigma_hold    = max(sigma_hold, 1e-4)
-                    sharpe_signal = abs(alpha) / sigma_hold
+                    sharpe_signal = abs_alpha / sigma_hold
 
                     target_risk = risk_cfg.get("target_position_risk_pct", 0.01)
                     base_size   = float(np.clip(target_risk / sigma_annual, 0.0, max_pos))
@@ -592,27 +650,65 @@ def run_backtest(
                     if np.isnan(entry_price) or entry_price <= 0:
                         continue
 
-                    role      = stock_metadata.loc[ticker, "role"] if ticker in stock_metadata.index else ""
-                    abs_alpha = abs(alpha)
+                    # ── ADV liquidity filter ─────────────────────────────────
+                    if stock_volumes is not None and ticker in stock_volumes.columns:
+                        try:
+                            t_pos = stock_volumes.index.get_loc(t)
+                        except KeyError:
+                            t_pos = -1
+                        if t_pos >= 20:
+                            avg_vol = float(
+                                stock_volumes.iloc[max(0, t_pos - 20): t_pos][ticker].mean()
+                            )
+                            adv_usd = avg_vol * entry_price
+                            if adv_usd > 0:
+                                position_notional = size * nav_total
+                                if position_notional > adv_filter_pct * adv_usd:
+                                    continue  # Position too large vs ADV
 
+                    # ── Commodity exposure cap ───────────────────────────────
+                    # Prevent over-concentration in a single commodity.
+                    current_commod_exp = sum(
+                        tr.size for tr in portfolio.open_trades if tr.commodity == commod
+                    )
+                    if current_commod_exp + size > max_commod_exp:
+                        available = max_commod_exp - current_commod_exp
+                        if available < risk_cfg.get("min_position_pct", 0.005):
+                            continue  # No room even for the minimum position
+                        size = available  # Trim to fit under cap
+
+                    # ── Entry slippage ───────────────────────────────────────
+                    # The effective price paid includes half-spread cost.
                     if direction == "LONG":
-                        tp_price = entry_price * (1.0 + abs_alpha)
-                        sl_price = entry_price * (1.0 - stop_loss)
+                        effective_entry = entry_price * (1.0 + slippage_pct)
                     else:
-                        tp_price = entry_price * (1.0 - abs_alpha)
-                        sl_price = entry_price * (1.0 + stop_loss)
+                        effective_entry = entry_price * (1.0 - slippage_pct)
+
+                    # TP / SL anchored on effective entry price
+                    if direction == "LONG":
+                        tp_price = effective_entry * (1.0 + abs_alpha)
+                        sl_price = effective_entry * (1.0 - stop_loss)
+                    else:
+                        tp_price = effective_entry * (1.0 - abs_alpha)
+                        sl_price = effective_entry * (1.0 + stop_loss)
+
+                    # Role determined by beta sign (correct for cross-commodity)
+                    role = "producer" if beta_val > 0 else "consumer"
 
                     trade = Trade(
-                        ticker             = ticker,
-                        commodity          = commod,
-                        direction          = direction,
-                        role               = role,
-                        entry_date         = t,
-                        entry_price        = entry_price,
-                        size               = size,
-                        alpha_at_entry     = abs_alpha,
-                        take_profit_price  = tp_price,
-                        stop_loss_price    = sl_price,
+                        ticker               = ticker,
+                        commodity            = commod,
+                        direction            = direction,
+                        role                 = role,
+                        entry_date           = t,
+                        entry_price          = effective_entry,
+                        size                 = size,
+                        alpha_at_entry       = abs_alpha,
+                        take_profit_price    = tp_price,
+                        stop_loss_price      = sl_price,
+                        last_price           = effective_entry,   # daily P&L basis
+                        original_shock_return = shock_ret,        # preserved for rebalancing
+                        shock_date           = t,
                     )
                     portfolio.open_position(trade)
 

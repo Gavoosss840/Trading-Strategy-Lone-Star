@@ -88,6 +88,7 @@ def build_reports(
     )
     stock_returns    = data["stock_returns"]
     stock_prices     = data["stock_prices"]
+    stock_volumes    = data.get("stock_volumes")      # may be None if download failed
     commodity_returns = data["commodity_returns"]
     market_returns   = data["market_returns"]
 
@@ -103,6 +104,7 @@ def build_reports(
         stock_metadata=stock_metadata,
         cfg=cfg,
         step_days=1,
+        stock_volumes=stock_volumes,
     )
 
     commodities = bt_result.commodities

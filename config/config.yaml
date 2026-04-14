@@ -289,6 +289,16 @@ execution:
   # (Avoids placing very small odd-lot orders)
   min_order_notional_usd: 100
 
+  # Per-side slippage estimate (half-spread model).
+  # Applied on entry AND exit: entry_price × (1 ± slip), exit_price × (1 ∓ slip).
+  # 0.001 = 10 bps per side (20 bps round-trip) — conservative for mid-large caps.
+  slippage_pct: 0.001
+
+  # ADV liquidity filter: skip a signal if the target position notional
+  # exceeds this fraction of the stock's 20-day average daily volume in USD.
+  # 0.05 = position must be ≤ 5% of 20-day ADV.
+  adv_filter_pct: 0.05
+
 # ── Output ────────────────────────────────────
 output:
   top_n_signals: 10

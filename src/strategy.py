@@ -57,6 +57,13 @@ class StrategyResult:
     run_time_seconds: float = 0.0
     warnings: List[str] = field(default_factory=list)
 
+    # Raw market data — stored so the backtest engine (report_builder) can
+    # reuse the same download without fetching again.  Also makes market_returns
+    # explicitly available for any downstream analytics step.
+    stock_prices: pd.DataFrame = field(default_factory=pd.DataFrame)
+    stock_volumes: pd.DataFrame = field(default_factory=pd.DataFrame)
+    market_returns_data: pd.Series = field(default_factory=pd.Series)
+
     def signals_dataframe(self) -> pd.DataFrame:
         df = scored_signals_to_dataframe(self.scored_signals)
         if df.empty or self.stock_metadata.empty:
@@ -238,11 +245,19 @@ class LoneStarStrategy:
             lookback_days=lookback,
             progress=False,
         )
-        stock_returns = data["stock_returns"]
+        stock_returns    = data["stock_returns"]
+        stock_prices     = data["stock_prices"]       # needed for backtest + ADV filter
+        stock_volumes    = data.get("stock_volumes", pd.DataFrame())  # ADV liquidity filter
         commodity_returns = data["commodity_returns"]
-        market_returns = data["market_returns"]
-        risk_free = data["risk_free_rate"]
-        ff_factors = data["ff_factors"]
+        market_returns   = data["market_returns"]     # passed to noise cleaning (CAPM / FF5)
+        risk_free        = data["risk_free_rate"]
+        ff_factors       = data["ff_factors"]
+
+        # Make market data available on the result for downstream reuse
+        # (e.g. report_builder can call run_backtest without re-downloading)
+        result.stock_prices       = stock_prices
+        result.stock_volumes      = stock_volumes
+        result.market_returns_data = market_returns
 
         if verbose:
             actual_stocks = len(stock_returns.columns)
