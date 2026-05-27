@@ -238,28 +238,28 @@ alpha:
 
 # ── Scoring weights ───────────────────────────
 scoring:
-  alpha_weight: 0.40
+  alpha_weight: 0.45              # ↑ alpha gap is the primary edge
   shock_weight: 0.20
   leverage_quality_weight: 0.15
   margin_quality_weight: 0.15
-  timing_weight: 0.10
-  min_score_to_trade: 0.45
+  timing_weight: 0.05             # ↓ timing matters less than signal strength
+  min_score_to_trade: 0.48        # ↑ higher bar — fewer but better trades
   min_display_score: 0.30
 
 # ── Risk management ───────────────────────────
 risk:
   # Hard position limits
-  max_position_pct: 0.06          # ↑ 6% per position (from 4%) — bigger bets on good signals
+  max_position_pct: 0.08          # ↑ 8% per position — bigger bets on quality signals
   min_position_pct: 0.005
-  max_commodity_exposure: 0.28    # ↑ 28% — absorb freed Crude Oil capital into Silver/Copper
-  max_holding_days: 12
+  max_commodity_exposure: 0.35    # ↑ 35% — concentrate capital in Silver/Copper winners
+  max_holding_days: 10            # ↓ 10d — alpha halflife is 3d, don't hold dead positions
 
   # ── Per-commodity hard caps ───────────────────
   commodity_exposure_overrides:
     natural_gas: 0.0              # DISABLED — Sharpe -9.91 (no structural beta)
     gold: 0.0                     # DISABLED — Sharpe -8.20 (safe-haven, not industrial)
-    silver: 0.15                  # Cap 15% — top performer (+10%), widened from 12%
-    crude_oil: 0.05               # Token cap 5% — Sharpe -3.07, 23% NAV was structural drag
+    crude_oil: 0.0                # DISABLED — Sharpe -3.95, 18.8% NAV fully wasted
+    silver: 0.20                  # ↑ Cap 20% — star performer (+11.7%), widened from 15%
 
   # ── Exit rules ─────────────────────────────────
   stop_loss_pct: 0.03             # ↓ 3% (from 4%) — cut losers 25% faster
@@ -269,9 +269,9 @@ risk:
   # where:
   #   base_size = target_position_risk_pct / sigma_residual_annual  (inverse vol)
   #   boost     = min(SR_signal / reference_sharpe, max_signal_boost)
-  target_position_risk_pct: 0.015 # ↑ 1.5% target vol → larger base positions
+  target_position_risk_pct: 0.020 # ↑ 2.0% target vol — larger inverse-vol base positions
   reference_sharpe: 0.50          # Boost = 1× at SR=0.50, 2× at SR=1.0
-  max_signal_boost: 3.0           # ↑ 3× boost — reward high-conviction signals more
+  max_signal_boost: 4.0           # ↑ 4× boost — max reward for highest-conviction signals
 
   # ── Rebalancing ────────────────────────────────
   # Re-evaluate every open position every N trading days.
@@ -297,7 +297,7 @@ risk:
   # ── Concentration cap ─────────────────────────
   # Prevents hidden concentration: 15 crude-oil LONGs on the same shock ≠ diversification.
   # Only the top N signals (sorted by |alpha| × shock_score) are opened per commodity shock.
-  max_positions_per_shock: 3        # ↑ back to 3 — Copper needs more slots
+  max_positions_per_shock: 4        # ↑ 4 — more Silver/Copper slots per shock
 
   # ── Vol-adjusted stop-loss ────────────────────
   # Stop = max(fixed_stop_loss_pct, atr_multiplier × 14d_daily_vol).
@@ -310,7 +310,7 @@ risk:
   # Exposure scaled around base max_commodity_exposure using rolling 63-day Sharpe.
   # floor: never below 25% of base; cap: never above 2× base (anti-concentration).
   sharpe_weight_floor: 0.10         # ↓ from 0.25 — really cut underperforming commodities
-  sharpe_weight_cap: 3.0            # ↑ from 2.0 — more capital to proven winners
+  sharpe_weight_cap: 4.0            # ↑ from 3.0 — max capital concentration in top Sharpe commodity
 
   # ── Momentum pre-filter ───────────────────────
   # Reject LONG if stock dropped >15% in N days (likely fundamental issue, not lag).
