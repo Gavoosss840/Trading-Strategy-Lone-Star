@@ -34,7 +34,9 @@ def _clean_prices(df: pd.DataFrame) -> pd.DataFrame:
 
 def _to_returns(prices: pd.DataFrame) -> pd.DataFrame:
     """Compute simple daily log returns."""
-    return np.log(prices / prices.shift(1)).dropna()
+    # how="all": only drop dates where every ticker has NaN (truly empty bar).
+    # how="any" (default) would truncate history to the newest IPO in the universe.
+    return np.log(prices / prices.shift(1)).dropna(how="all")
 
 
 # ── Core download functions ───────────────────────────────────────────────────
