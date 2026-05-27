@@ -299,6 +299,19 @@ risk:
   atr_stop_multiplier: 2.0          # N × 14-day rolling daily vol
   max_atr_stop_pct: 0.12            # Hard cap on vol-adjusted stop (12%)
 
+  # ── Sharpe-weighted NAV allocation ────────────
+  # Commodity with Sharpe 1.5 gets more capital than one with Sharpe 0.4.
+  # Exposure scaled around base max_commodity_exposure using rolling 63-day Sharpe.
+  # floor: never below 25% of base; cap: never above 2× base (anti-concentration).
+  sharpe_weight_floor: 0.25         # Minimum allocation multiplier
+  sharpe_weight_cap: 2.0            # Maximum allocation multiplier
+
+  # ── Momentum pre-filter ───────────────────────
+  # Reject LONG if stock dropped >15% in N days (likely fundamental issue, not lag).
+  # Reject SHORT if stock rallied >15% in N days.
+  momentum_lookback_days: 5
+  momentum_max_adverse_pct: 0.15
+
 # ── Execution (live trading / IBKR) ───────────
 execution:
   # Portfolio NAV in USD — used to compute whole-share quantities.

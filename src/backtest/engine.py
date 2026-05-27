@@ -19,6 +19,7 @@ Optimisations vs v1:
 from __future__ import annotations
 
 import warnings
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -268,6 +269,55 @@ def _scan_best_shock(
                 best = (acc_ret, score, age, end_date)
 
     return best
+
+
+# ── Sharpe-weighted commodity allocation ──────────────────────────────────────
+
+def _sharpe_weighted_exposure(
+    pnl_history: Dict[str, deque],
+    commodities: List[str],
+    base_max_exp: float,
+    floor_mult: float = 0.25,
+    cap_mult: float = 2.0,
+) -> Dict[str, float]:
+    """
+    Compute per-commodity max exposure scaled by rolling realised Sharpe.
+
+    Commodities with a strong positive Sharpe get up to cap_mult × base_max_exp.
+    Commodities with zero/negative Sharpe are floored at floor_mult × base_max_exp.
+    Equal weights apply until 20 days of history have accumulated.
+
+    Using lagged data (history updated *after* decisions) so there is no
+    look-ahead bias — today's sizing reflects yesterday's realised performance.
+    """
+    sharpes: Dict[str, float] = {}
+    for c in commodities:
+        buf = pnl_history[c]
+        if len(buf) >= 20:
+            arr = np.array(buf)
+            mu    = arr.mean() * 252
+            sigma = arr.std() * np.sqrt(252)
+            sharpes[c] = mu / sigma if sigma > 0 else 0.0
+        else:
+            sharpes[c] = 0.0  # neutral until enough history
+
+    pos_sharpes = {c: max(s, 0.0) for c, s in sharpes.items()}
+    total = sum(pos_sharpes.values())
+    n     = len(commodities)
+
+    if total > 0:
+        weights = {c: pos_sharpes[c] / total for c in commodities}
+    else:
+        weights = {c: 1.0 / n for c in commodities}
+
+    return {
+        c: float(np.clip(
+            base_max_exp * n * weights[c],
+            base_max_exp * floor_mult,
+            base_max_exp * cap_mult,
+        ))
+        for c in commodities
+    }
 
 
 # ── Rebalancing ───────────────────────────────────────────────────────────────
@@ -633,6 +683,14 @@ def run_backtest(
     atr_multiplier = risk_cfg.get("atr_stop_multiplier", 2.0)
     max_atr_stop   = risk_cfg.get("max_atr_stop_pct", 0.12)
 
+    # ── Sharpe-weighted allocation ────────────────────────────────────────
+    sharpe_floor_mult = risk_cfg.get("sharpe_weight_floor", 0.25)
+    sharpe_cap_mult   = risk_cfg.get("sharpe_weight_cap", 2.0)
+
+    # ── Momentum pre-filter ───────────────────────────────────────────────
+    momentum_lb  = risk_cfg.get("momentum_lookback_days", 5)
+    momentum_adv = risk_cfg.get("momentum_max_adverse_pct", 0.15)
+
     commodities = list(commodity_returns.columns)
 
     # ── Pre-compute rolling ADV for liquidity filter ──────────────────────
@@ -645,6 +703,13 @@ def run_backtest(
 
     # ── Pre-compute 14-day rolling vol per stock (for vol-adj stop-loss) ─
     stock_vol_14d = stock_returns.rolling(14, min_periods=5).std()
+
+    # ── Pre-compute N-day cumulative momentum per stock ───────────────────
+    stock_cum_mom = (
+        (1 + stock_returns)
+        .rolling(momentum_lb, min_periods=max(momentum_lb // 2, 2))
+        .apply(np.prod, raw=True) - 1
+    )
 
     # ── Pre-compute betas and residuals ───────────────────────────────────
     beta_method = (
@@ -740,6 +805,11 @@ def run_backtest(
         print(f"  [BT] Regime filter: {n_risk_off}/{len(sim_dates)} days flagged risk-off "
               f"(VIX>{vix_threshold} or |correl|>{correl_threshold})")
 
+    # Rolling P&L history per commodity — feeds Sharpe-weighted allocation
+    pnl_history: Dict[str, deque] = {c: deque(maxlen=63) for c in commodities}
+    # Start with equal weights; will be updated after each day
+    eff_commod_exp: Dict[str, float] = {c: max_commod_exp for c in commodities}
+
     portfolio  = Portfolio(stop_loss, max_hold, slippage_pct)
     all_cols   = commodities + ["combined"]
     pnl_rows: List[dict] = []
@@ -755,6 +825,13 @@ def run_backtest(
             stock_prices.loc[t] if t in stock_prices.index
             else pd.Series(dtype=float)
         )
+
+        # ── 0. Sharpe-weighted exposure limits (uses lagged history) ──────
+        if i > 0:  # skip day 0; history is empty, equal weights already set
+            eff_commod_exp = _sharpe_weighted_exposure(
+                pnl_history, commodities, max_commod_exp,
+                sharpe_floor_mult, sharpe_cap_mult,
+            )
 
         # ── 1. Rebalance open positions ───────────────────────────────────
         if i > 0 and i % rebal_freq == 0 and portfolio.open_trades:
@@ -808,11 +885,12 @@ def run_backtest(
                 shock_ret, shock_score, shock_age, shock_date = shock_result
 
                 # Current commodity exposure — bail early if already full
+                commod_cap = eff_commod_exp[commod]
                 cur_commod_exp = sum(
                     tr.size for tr in portfolio.open_trades
                     if tr.commodity == commod
                 )
-                if cur_commod_exp >= max_commod_exp:
+                if cur_commod_exp >= commod_cap:
                     continue
 
                 # ── Collect all candidate signals (concentration cap) ──────
@@ -857,6 +935,20 @@ def run_backtest(
                         continue
 
                     direction = "LONG" if alpha > 0 else "SHORT"
+
+                    # ── Momentum pre-filter ───────────────────────────────
+                    # Reject if the stock has been moving strongly AGAINST
+                    # the signal direction — likely a fundamental issue, not a lag.
+                    if (
+                        t in stock_cum_mom.index
+                        and ticker in stock_cum_mom.columns
+                    ):
+                        cum_mom = float(stock_cum_mom.at[t, ticker])
+                        if not np.isnan(cum_mom):
+                            if direction == "LONG" and cum_mom < -momentum_adv:
+                                continue
+                            if direction == "SHORT" and cum_mom > momentum_adv:
+                                continue
 
                     # CML position sizing
                     recent_r   = resid_series.loc[:t].iloc[-63:]
@@ -903,7 +995,7 @@ def run_backtest(
                 # ── Sort by quality desc; keep top N (concentration cap) ───
                 candidates.sort(key=lambda c: c["quality"], reverse=True)
 
-                remaining_cap = max_commod_exp - cur_commod_exp
+                remaining_cap = commod_cap - cur_commod_exp
                 for cand in candidates[:max_pos_per_shock]:
                     if remaining_cap < min_pos:
                         break
@@ -953,6 +1045,10 @@ def run_backtest(
         row["combined"] = sum(row.values())
         row["date"] = t
         pnl_rows.append(row)
+
+        # Update rolling P&L history (lagged: today's result sizes tomorrow's positions)
+        for c in commodities:
+            pnl_history[c].append(row[c])
 
     # Force-close all remaining positions at end of simulation
     if sim_dates.size > 0:
