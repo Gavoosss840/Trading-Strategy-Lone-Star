@@ -199,7 +199,7 @@ stocks:
 
 # ── Data parameters ───────────────────────────
 data:
-  lookback_days: 504
+  lookback_days: 1500
   shock_lookback_days: 63
   min_observations: 120
   risk_free_rate_ticker: "^IRX"
