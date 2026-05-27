@@ -223,7 +223,7 @@ fundamental:
 # ── Shock detection ───────────────────────────
 shock:
   min_amplitude_pct: 1.5
-  min_zscore: 2.0
+  min_zscore: 2.5                   # ↑ from 2.0 — only high-conviction shocks
   lookback_vol_days: 63
   speed_decay: 0.7
   max_age_days: 5
@@ -231,7 +231,7 @@ shock:
 
 # ── Alpha thresholds ──────────────────────────
 alpha:
-  min_alpha_pct: 1.0
+  min_alpha_pct: 2.0                # ↑ from 1.0 — only trade when ≥2% gap expected
   max_alpha_pct: 15.0
   decay_halflife_days: 3
   already_priced_ratio: 0.85
@@ -243,16 +243,22 @@ scoring:
   leverage_quality_weight: 0.15
   margin_quality_weight: 0.15
   timing_weight: 0.10
-  min_score_to_trade: 0.45
+  min_score_to_trade: 0.50          # ↑ from 0.45 — only top-tier signals
   min_display_score: 0.30
 
 # ── Risk management ───────────────────────────
 risk:
   # Hard position limits
-  max_position_pct: 0.05          # Maximum 5% per position
+  max_position_pct: 0.04          # ↓ 4% per position (from 5%) — tighter risk
   min_position_pct: 0.005         # Minimum 0.5% (below → discard)
-  max_commodity_exposure: 0.20    # Maximum 20% gross exposure per commodity
-  max_holding_days: 20            # Force-close after 20 days (2-week rebalancing cycle)
+  max_commodity_exposure: 0.15    # ↓ 15% per commodity (from 20%)
+  max_holding_days: 30            # ↑ 30 calendar days (monthly rebalancing cycle)
+
+  # ── Per-commodity hard caps (overrides Sharpe-weighted allocation) ────
+  # Use to permanently limit noisy commodities regardless of Sharpe history.
+  # natural_gas capped at 3%: too high vol / low signal quality for our beta model.
+  commodity_exposure_overrides:
+    natural_gas: 0.03             # Hard cap NG at 3% regardless of Sharpe weight
 
   # ── Exit rules ─────────────────────────────────
   # Take Profit: linked to α=0 fair value (price where shock is fully priced)
@@ -261,7 +267,7 @@ risk:
   #   No fixed % override needed — the signal itself defines the target.
   #
   # Stop Loss: max drawdown % from entry (Taurus-style fixed guard)
-  stop_loss_pct: 0.05             # Stop loss at -5% from entry (max drawdown)
+  stop_loss_pct: 0.04             # ↓ 4% stop-loss (from 5%) — cut losers faster
 
   # ── CML + risk-parity sizing parameters ──────
   # Position size = base_size × boost × composite_score
@@ -274,23 +280,23 @@ risk:
 
   # ── Rebalancing ────────────────────────────────
   # Re-evaluate every open position every N trading days.
-  # 10 trading days ≈ 2 calendar weeks.
+  # 21 trading days ≈ 1 calendar month.
   # At each rebalance: adjust size in-place, replace TP/SL from current price.
   # Never close + reopen — only mutate the existing position.
-  rebalancing_frequency_days: 10
-  min_cross_commodity_beta: 0.20    # Minimum |beta| to consider cross-commodity signal
+  rebalancing_frequency_days: 21   # ↑ Monthly (from 10)
+  min_cross_commodity_beta: 0.25    # ↑ Stronger beta relationship required (from 0.20)
 
   # ── Regime filter ─────────────────────────────
   # Block new entries when market is risk-off (correlations collapse alpha).
   # VIX > threshold = fear elevated; correl > threshold = market dominates all moves.
-  regime_vix_threshold: 25.0
+  regime_vix_threshold: 22.0       # ↓ from 25.0 — block entries earlier during fear
   regime_correl_threshold: 0.70     # |rolling correl(SPY, avg commodity)| > this = risk-off
-  regime_correl_window: 20          # Rolling window in trading days
+  regime_correl_window: 30          # ↑ Smoother estimate (from 20 days)
 
   # ── Concentration cap ─────────────────────────
   # Prevents hidden concentration: 15 crude-oil LONGs on the same shock ≠ diversification.
   # Only the top N signals (sorted by |alpha| × shock_score) are opened per commodity shock.
-  max_positions_per_shock: 3
+  max_positions_per_shock: 2        # ↓ from 3 — only the 2 best signals per shock
 
   # ── Vol-adjusted stop-loss ────────────────────
   # Stop = max(fixed_stop_loss_pct, atr_multiplier × 14d_daily_vol).
@@ -302,8 +308,8 @@ risk:
   # Commodity with Sharpe 1.5 gets more capital than one with Sharpe 0.4.
   # Exposure scaled around base max_commodity_exposure using rolling 63-day Sharpe.
   # floor: never below 25% of base; cap: never above 2× base (anti-concentration).
-  sharpe_weight_floor: 0.25         # Minimum allocation multiplier
-  sharpe_weight_cap: 2.0            # Maximum allocation multiplier
+  sharpe_weight_floor: 0.10         # ↓ from 0.25 — really cut underperforming commodities
+  sharpe_weight_cap: 3.0            # ↑ from 2.0 — more capital to proven winners
 
   # ── Momentum pre-filter ───────────────────────
   # Reject LONG if stock dropped >15% in N days (likely fundamental issue, not lag).

@@ -406,14 +406,6 @@ def _rebalance_portfolio(
             portfolio.closed_trades.append(trade)
             continue
 
-        # 3. Shock too old
-        if trade.original_shock_date is not None:
-            days_since = (current_date - trade.original_shock_date).days
-            if days_since > max_age * 2:
-                trade.close(current_date, current_price, "rebalance_shock_expired", slippage_pct)
-                portfolio.closed_trades.append(trade)
-                continue
-
         # Residuals accumulated since entry
         resid_series = residuals.get(trade.ticker)
         if resid_series is None:
@@ -695,6 +687,9 @@ def run_backtest(
 
     commodities = list(commodity_returns.columns)
 
+    # ── Per-commodity hard exposure caps (override Sharpe-weighted) ───────
+    commod_exp_overrides: Dict[str, float] = risk_cfg.get("commodity_exposure_overrides", {})
+
     # ── Pre-compute rolling ADV for liquidity filter ──────────────────────
     rolling_adv: Optional[pd.DataFrame] = None
     if stock_volumes is not None and not stock_volumes.empty and min_adv_usd > 0:
@@ -817,6 +812,10 @@ def run_backtest(
     pnl_history: Dict[str, deque] = {c: deque(maxlen=63) for c in commodities}
     # Start with equal weights; will be updated after each day
     eff_commod_exp: Dict[str, float] = {c: max_commod_exp for c in commodities}
+    # Apply hard per-commodity overrides (e.g. cap NG at 3% regardless of Sharpe)
+    for _c, _cap in commod_exp_overrides.items():
+        if _c in eff_commod_exp:
+            eff_commod_exp[_c] = min(eff_commod_exp[_c], _cap)
 
     portfolio  = Portfolio(stop_loss, max_hold, slippage_pct)
     all_cols   = commodities + ["combined"]
@@ -840,6 +839,10 @@ def run_backtest(
                 pnl_history, commodities, max_commod_exp,
                 sharpe_floor_mult, sharpe_cap_mult,
             )
+            # Re-apply hard overrides after Sharpe update
+            for _c, _cap in commod_exp_overrides.items():
+                if _c in eff_commod_exp:
+                    eff_commod_exp[_c] = min(eff_commod_exp[_c], _cap)
 
         # ── 1. Rebalance open positions ───────────────────────────────────
         if i > 0 and i % rebal_freq == 0 and portfolio.open_trades:
