@@ -48,6 +48,7 @@ def build_reports(
     verbose: bool = True,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    lookback: Optional[int] = None,
 ) -> None:
     """
     Full pipeline: backtest → analytics → charts → exports.
@@ -70,10 +71,14 @@ def build_reports(
     with open(config_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    # CLI --lookback overrides config value (lets user extend history without editing YAML)
+    if lookback is not None:
+        cfg["data"]["lookback_days"] = lookback
+
     strategy = LoneStarStrategy(cfg)
     commodity_cfg = cfg["commodities"]
     data_cfg = cfg["data"]
-    lookback = data_cfg.get("lookback_days", 504)
+    lookback_days = data_cfg.get("lookback_days", 504)
 
     log("\n" + "═" * 70)
     log("  ★  LONE STAR — Report Builder")
@@ -87,7 +92,7 @@ def build_reports(
     data = load_all_data(
         stock_tickers=stock_tickers,
         commodity_config=commodity_cfg,
-        lookback_days=lookback,
+        lookback_days=lookback_days,
         progress=False,
     )
     stock_returns    = data["stock_returns"]

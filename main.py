@@ -9,6 +9,7 @@ Usage:
     python main.py --report                 # Full backtest + charts + report.png
     python main.py --report --output out/   # Custom output directory
     python main.py --config path/to/cfg.yaml
+    python main.py --report --start 2022-01-01 --lookback 1500  # Backtest from 2022 with 6yr data
     python main.py --top 20                 # Show top 20 live signals
     python main.py --commodity crude_oil    # Filter to one commodity
     python main.py --zone europe            # Filter to one geographic zone
@@ -86,6 +87,13 @@ def parse_args() -> argparse.Namespace:
         help="Backtest end date, e.g. 2025-12-31 (default: latest available)",
     )
     parser.add_argument(
+        "--lookback",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help="Override lookback_days from config (e.g. 1500 for ~6 years of data)",
+    )
+    parser.add_argument(
         "--no-live",
         action="store_true",
         help="Skip live signal scan when running --report",
@@ -137,6 +145,7 @@ def main() -> int:
             verbose=not args.quiet,
             start_date=args.start,
             end_date=args.end,
+            lookback=args.lookback,
         )
         return 0
 
