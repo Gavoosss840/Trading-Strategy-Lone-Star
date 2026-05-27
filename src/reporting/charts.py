@@ -378,8 +378,8 @@ def _draw_summary_table(
         ax.text(cx, y0, hdr, fontsize=8, fontweight="bold", va="top",
                 transform=ax.transAxes, color="#333")
     y0 -= 0.005
-    ax.axhline(y0, xmin=0, xmax=1, color="#aaa", linewidth=0.8,
-               transform=ax.transAxes)
+    ax.plot([0, 1], [y0, y0], color="#aaa", linewidth=0.8,
+            transform=ax.transAxes, clip_on=False)
     y0 -= row_h * 0.6
 
     for key in ordered_all:
@@ -408,8 +408,8 @@ def _draw_summary_table(
 
     # NAV Allocation
     y0 -= row_h * 0.5
-    ax.axhline(y0 + row_h * 0.2, xmin=0, xmax=1, color="#aaa",
-               linewidth=0.5, transform=ax.transAxes)
+    ax.plot([0, 1], [y0 + row_h * 0.2, y0 + row_h * 0.2], color="#aaa",
+            linewidth=0.5, transform=ax.transAxes, clip_on=False)
     y0 -= row_h * 0.3
     ax.text(0.0, y0, "NAV Allocation", fontsize=8, fontweight="bold",
             va="top", transform=ax.transAxes, color="#333")
