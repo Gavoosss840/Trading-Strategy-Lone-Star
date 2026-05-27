@@ -106,7 +106,10 @@ def plot_equity_curve(
     ax_eq.set_title(title, fontsize=13, fontweight="bold", pad=10)
     ax_eq.axhline(1.0, color="grey", linewidth=0.7, linestyle=":")
     ax_eq.legend(loc="upper left", fontsize=8, framealpha=0.85)
-    ax_eq.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1f}"))
+    # Show as percentage gain from start: 1.25 → "+25%"
+    ax_eq.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"{(x - 1) * 100:+.0f}%")
+    )
     ax_eq.grid(True)
 
     # Drawdown (combined only)
@@ -118,6 +121,7 @@ def plot_equity_curve(
     ax_dd.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0%}"))
     ax_dd.grid(True)
     ax_dd.set_xlabel("Date", fontsize=9)
+    plt.setp(ax_dd.get_xticklabels(), rotation=30, ha="right", fontsize=8)
 
     plt.setp(ax_eq.get_xticklabels(), visible=False)
     fig.tight_layout()
@@ -445,9 +449,12 @@ def _draw_equity_in_ax(ax: plt.Axes, daily_pnl: pd.DataFrame, title: str) -> Non
     ax.set_title(title, fontsize=11, fontweight="bold")
     ax.axhline(1.0, color="grey", linewidth=0.7, linestyle=":")
     ax.legend(loc="upper left", fontsize=7.5, framealpha=0.85)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.1f}"))
+    ax.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"{(x - 1) * 100:+.0f}%")
+    )
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.set_xlabel("Date", fontsize=9)
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
 
 
 def _draw_heatmap_in_ax(ax: plt.Axes, monthly_returns: pd.DataFrame, title: str) -> None:

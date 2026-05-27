@@ -74,6 +74,18 @@ def parse_args() -> argparse.Namespace:
         help="Output directory for reports (default: output/)",
     )
     parser.add_argument(
+        "--start",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Backtest start date, e.g. 2022-01-01 (default: earliest available)",
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Backtest end date, e.g. 2025-12-31 (default: latest available)",
+    )
+    parser.add_argument(
         "--no-live",
         action="store_true",
         help="Skip live signal scan when running --report",
@@ -123,6 +135,8 @@ def main() -> int:
             output_dir=args.output,
             run_live=not args.no_live,
             verbose=not args.quiet,
+            start_date=args.start,
+            end_date=args.end,
         )
         return 0
 

@@ -195,7 +195,16 @@ def compute_all_metrics(
 # ── Rolling Sharpe ────────────────────────────────────────────────────────────
 
 def rolling_sharpe(daily_pnl: pd.DataFrame, window_days: int = 252) -> pd.DataFrame:
-    """Compute rolling annualised Sharpe ratio for each column."""
-    roll_mean = daily_pnl.rolling(window_days).mean() * 252
-    roll_std = daily_pnl.rolling(window_days).std() * np.sqrt(252)
+    """
+    Compute rolling annualised Sharpe ratio for each column.
+
+    Uses min_periods = window_days // 2 so that short backtests (< 252 days)
+    still show a rolling Sharpe from the midpoint rather than returning empty.
+    """
+    n = len(daily_pnl)
+    # Adapt window to available data so the chart is never empty
+    effective_window = min(window_days, max(20, n - 5))
+    min_p = max(20, effective_window // 2)
+    roll_mean = daily_pnl.rolling(effective_window, min_periods=min_p).mean() * 252
+    roll_std  = daily_pnl.rolling(effective_window, min_periods=min_p).std() * np.sqrt(252)
     return (roll_mean / roll_std.replace(0, np.nan)).dropna(how="all")

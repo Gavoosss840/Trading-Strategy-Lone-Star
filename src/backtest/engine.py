@@ -621,6 +621,8 @@ def run_backtest(
     sector_returns: Optional[Dict[str, pd.Series]] = None,
     stock_volumes: Optional[pd.DataFrame] = None,
     vix_series: Optional[pd.Series] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> BacktestResult:
     """
     Walk-forward backtest — Lone Star v2 with all quant optimisations.
@@ -797,6 +799,12 @@ def run_backtest(
             .abs()
         )
         regime_risk_off |= (roll_correl > correl_threshold).fillna(False)
+
+    # ── Apply user-requested date range filter ────────────────────────────
+    if start_date:
+        sim_dates = sim_dates[sim_dates >= pd.Timestamp(start_date)]
+    if end_date:
+        sim_dates = sim_dates[sim_dates <= pd.Timestamp(end_date)]
 
     regime_risk_off = regime_risk_off.reindex(sim_dates, fill_value=False)
 

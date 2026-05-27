@@ -46,6 +46,8 @@ def build_reports(
     output_dir: str = "output",
     run_live: bool = True,
     verbose: bool = True,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> None:
     """
     Full pipeline: backtest → analytics → charts → exports.
@@ -55,6 +57,8 @@ def build_reports(
         output_dir  : Root output directory
         run_live    : Also run today's live signal scan
         verbose     : Print progress
+        start_date  : Restrict simulation start, e.g. "2022-01-01"
+        end_date    : Restrict simulation end,   e.g. "2025-12-31"
     """
     base = Path(output_dir)
 
@@ -99,6 +103,10 @@ def build_reports(
 
     # ── Run backtest ───────────────────────────────────────────────────────
     log("  [2/5] Running walk-forward backtest...")
+    if start_date or end_date:
+        _range = " → ".join(filter(None, [start_date, end_date or "today"]))
+        log(f"     Simulation range : {_range}")
+
     bt_result = run_backtest(
         stock_returns=stock_returns,
         stock_prices=stock_prices,
@@ -109,6 +117,8 @@ def build_reports(
         step_days=1,
         stock_volumes=stock_volumes,
         vix_series=vix_series,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     commodities = bt_result.commodities
