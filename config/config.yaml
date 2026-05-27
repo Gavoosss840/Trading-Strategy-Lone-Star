@@ -87,7 +87,6 @@ stocks:
     # Canadian gas producers / pipeline
     - { ticker: "TRP",      name: "TC Energy (CA)",          primary_commodity: natural_gas, role: producer }
     - { ticker: "TOU.TO",   name: "Tourmaline Oil (CA)",     primary_commodity: natural_gas, role: producer }
-    - { ticker: "ARC.TO",   name: "ARC Resources (CA)",      primary_commodity: natural_gas, role: producer }
 
     # ── Gold — Producers (GDX / GDXJ reference) ──
     - { ticker: "NEM",    name: "Newmont",                       primary_commodity: gold,   role: producer }
