@@ -254,12 +254,32 @@ risk:
   max_commodity_exposure: 0.35    # ↑ 35% — concentrate capital in Silver/Copper winners
   max_holding_days: 10            # ↓ 10d — alpha halflife is 3d, don't hold dead positions
 
-  # ── Per-commodity hard caps ───────────────────
+  # ── Per-commodity static max caps ────────────────────────────────────────
+  # These are CEILINGS, not kill switches. The dynamic allocation system
+  # scales exposure BELOW these in real-time based on opportunity vs risk.
+  # A high-conviction signal can reach up to this cap even if dynamic
+  # allocation would otherwise suppress the commodity.
   commodity_exposure_overrides:
-    natural_gas: 0.0              # DISABLED — Sharpe -9.91 (no structural beta)
-    gold: 0.0                     # DISABLED — Sharpe -8.20 (safe-haven, not industrial)
-    crude_oil: 0.0                # DISABLED — Sharpe -3.95, 18.8% NAV fully wasted
-    silver: 0.20                  # ↑ Cap 20% — star performer (+11.7%), widened from 15%
+    natural_gas: 0.12             # Static max — dynamic suppresses when no shock activity
+    gold: 0.18                    # Static max — re-enabled; dynamic manages real-time
+    crude_oil: 0.18               # Static max — re-enabled; dynamic reduces when quiet
+    silver: 0.22                  # Higher ceiling — proven performer
+
+  # ── Dynamic opportunity / risk allocation ─────────────────────────────────
+  # Adjusts each commodity's effective cap daily:
+  #   opportunity = peak shock score in last N days (strong shock → cap rises)
+  #   risk        = recent realized P&L loss      (losses → cap falls)
+  #   scale       = (1 + opportunity) / (1 + risk)  clipped to [min, max]
+  # High-conviction override: if shock_score >= threshold, a signal bypasses
+  # the dynamically-reduced cap and uses the static max cap above — so we
+  # NEVER miss a powerful gold/crude signal just because recent P&L was weak.
+  dynamic_allocation:
+    enabled: true
+    opportunity_lookback_days: 10        # Rolling window for shock activity tracking
+    risk_lookback_days: 21               # Rolling window for P&L risk assessment
+    min_scale_factor: 0.15              # Floor: 15% of base cap during quiet/loss periods
+    max_scale_factor: 2.0               # Ceiling: 2× base cap on strong shock + good P&L
+    high_conviction_score_threshold: 0.70  # Shock score ≥ 0.70 → bypass dynamic cap
 
   # ── Exit rules ─────────────────────────────────
   stop_loss_pct: 0.03             # ↓ 3% (from 4%) — cut losers 25% faster

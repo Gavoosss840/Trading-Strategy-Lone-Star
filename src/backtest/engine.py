@@ -271,6 +271,40 @@ def _scan_best_shock(
     return best
 
 
+# ── Dynamic opportunity / risk scaling ───────────────────────────────────────
+
+def _compute_dynamic_commodity_scale(
+    recent_shock_scores: deque,
+    commodity_pnl_history: deque,
+    risk_window: int,
+    min_scale: float,
+    max_scale: float,
+) -> float:
+    """
+    Scale the commodity exposure cap by an opportunity/risk ratio.
+
+    opportunity = peak shock score seen in the tracked window
+                  (strong recent shock → more room to trade)
+    risk        = cumulative P&L loss over the risk window
+                  (recent losses → tighten allocation)
+
+    Returns a multiplier in [min_scale, max_scale] applied to the
+    static base cap from commodity_exposure_overrides.
+    """
+    best_shock = max(recent_shock_scores, default=0.0)
+    # reference score ≈ 0.5 (3 % move, z≈2.5) → tanh(1) ≈ 0.76
+    opp = float(np.tanh(best_shock / 0.5))
+
+    buf = list(commodity_pnl_history)
+    recent = buf[-risk_window:] if len(buf) >= risk_window else buf
+    recent_pnl = float(sum(recent)) if recent else 0.0
+    # 1.5 % drawdown → risk = 1.0  (scale roughly halved)
+    risk = max(-recent_pnl / 0.015, 0.0)
+
+    raw = (1.0 + opp) / (1.0 + risk)
+    return float(np.clip(raw, min_scale, max_scale))
+
+
 # ── Sharpe-weighted commodity allocation ──────────────────────────────────────
 
 def _sharpe_weighted_exposure(
@@ -681,6 +715,15 @@ def run_backtest(
     sharpe_floor_mult = risk_cfg.get("sharpe_weight_floor", 0.25)
     sharpe_cap_mult   = risk_cfg.get("sharpe_weight_cap", 2.0)
 
+    # ── Dynamic opportunity / risk allocation ─────────────────────────────
+    dyn_cfg         = risk_cfg.get("dynamic_allocation", {})
+    dyn_enabled     = dyn_cfg.get("enabled", False)
+    dyn_opp_window  = int(dyn_cfg.get("opportunity_lookback_days", 10))
+    dyn_risk_window = int(dyn_cfg.get("risk_lookback_days", 21))
+    dyn_min_scale   = float(dyn_cfg.get("min_scale_factor", 0.15))
+    dyn_max_scale   = float(dyn_cfg.get("max_scale_factor", 2.0))
+    high_conv_thr   = float(dyn_cfg.get("high_conviction_score_threshold", 0.70))
+
     # ── Momentum pre-filter ───────────────────────────────────────────────
     momentum_lb  = risk_cfg.get("momentum_lookback_days", 5)
     momentum_adv = risk_cfg.get("momentum_max_adverse_pct", 0.15)
@@ -816,10 +859,15 @@ def run_backtest(
     pnl_history: Dict[str, deque] = {c: deque(maxlen=63) for c in commodities}
     # Start with equal weights; will be updated after each day
     eff_commod_exp: Dict[str, float] = {c: max_commod_exp for c in commodities}
-    # Apply hard per-commodity overrides (e.g. cap NG at 3% regardless of Sharpe)
+    # Apply hard per-commodity overrides (static base caps on day 0)
     for _c, _cap in commod_exp_overrides.items():
         if _c in eff_commod_exp:
             eff_commod_exp[_c] = min(eff_commod_exp[_c], _cap)
+
+    # Per-commodity rolling shock score tracker (feeds dynamic allocation)
+    recent_shock_scores: Dict[str, deque] = {
+        c: deque(maxlen=dyn_opp_window) for c in commodities
+    }
 
     portfolio  = Portfolio(stop_loss, max_hold, slippage_pct)
     all_cols   = commodities + ["combined"]
@@ -837,16 +885,43 @@ def run_backtest(
             else pd.Series(dtype=float)
         )
 
-        # ── 0. Sharpe-weighted exposure limits (uses lagged history) ──────
+        # ── 0a. Daily shock tracking — always runs, feeds dynamic alloc ───
+        for _c in commodities:
+            _cs = commodity_returns.loc[:t][_c].dropna()
+            if len(_cs) >= vol_window + max_accum + 2:
+                _vs = commod_vol.loc[:t][_c].dropna()
+                _r  = _scan_best_shock(
+                    _cs.iloc[-(max_age + max_accum + 2):], _vs,
+                    min_amp, min_z, speed_decay, max_age, max_accum,
+                )
+                recent_shock_scores[_c].append(_r[1] if _r else 0.0)
+            else:
+                recent_shock_scores[_c].append(0.0)
+
+        # ── 0b. Sharpe-weighted exposure limits (uses lagged history) ─────
         if i > 0:  # skip day 0; history is empty, equal weights already set
             eff_commod_exp = _sharpe_weighted_exposure(
                 pnl_history, commodities, max_commod_exp,
                 sharpe_floor_mult, sharpe_cap_mult,
             )
-            # Re-apply hard overrides after Sharpe update
-            for _c, _cap in commod_exp_overrides.items():
-                if _c in eff_commod_exp:
-                    eff_commod_exp[_c] = min(eff_commod_exp[_c], _cap)
+            if dyn_enabled:
+                # Dynamic cap = base_cap × opportunity/risk scale factor
+                # High-conviction signals still bypass via override below.
+                for _c in commodities:
+                    base_cap = commod_exp_overrides.get(_c, max_commod_exp)
+                    scale = _compute_dynamic_commodity_scale(
+                        recent_shock_scores[_c],
+                        pnl_history[_c],
+                        dyn_risk_window,
+                        dyn_min_scale,
+                        dyn_max_scale,
+                    )
+                    eff_commod_exp[_c] = min(eff_commod_exp[_c], base_cap * scale)
+            else:
+                # Legacy: hard overrides only
+                for _c, _cap in commod_exp_overrides.items():
+                    if _c in eff_commod_exp:
+                        eff_commod_exp[_c] = min(eff_commod_exp[_c], _cap)
 
         # ── 1. Rebalance open positions ───────────────────────────────────
         if i > 0 and i % rebal_freq == 0 and portfolio.open_trades:
@@ -908,14 +983,26 @@ def run_backtest(
 
                 shock_ret, shock_score, shock_age, shock_date = shock_result
 
-                # Current commodity exposure — bail early if already full
-                commod_cap = eff_commod_exp[commod]
+                # Current commodity exposure check
+                commod_cap     = eff_commod_exp[commod]
                 cur_commod_exp = sum(
                     tr.size for tr in portfolio.open_trades
                     if tr.commodity == commod
                 )
+
                 if cur_commod_exp >= commod_cap:
-                    continue
+                    # High-conviction override: exceptional shocks bypass the
+                    # dynamically-reduced cap and fall back to the static base cap.
+                    # This ensures we never miss a strong gold/crude signal just
+                    # because recent performance was poor.
+                    if dyn_enabled and shock_score >= high_conv_thr:
+                        hard_cap = commod_exp_overrides.get(commod, max_commod_exp)
+                        if cur_commod_exp < hard_cap:
+                            commod_cap = hard_cap   # expand ceiling for this signal
+                        else:
+                            continue  # even static cap is full
+                    else:
+                        continue
 
                 # ── Collect all candidate signals (concentration cap) ──────
                 # Score every eligible stock, sort by quality, keep top N.
