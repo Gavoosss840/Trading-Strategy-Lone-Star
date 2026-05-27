@@ -251,15 +251,15 @@ risk:
   # Hard position limits
   max_position_pct: 0.06          # ↑ 6% per position (from 4%) — bigger bets on good signals
   min_position_pct: 0.005
-  max_commodity_exposure: 0.25    # ↑ 25% (from 18%) — more room for Silver/Copper
+  max_commodity_exposure: 0.28    # ↑ 28% — absorb freed Crude Oil capital into Silver/Copper
   max_holding_days: 12
 
   # ── Per-commodity hard caps ───────────────────
   commodity_exposure_overrides:
     natural_gas: 0.0              # DISABLED — Sharpe -9.91 (no structural beta)
     gold: 0.0                     # DISABLED — Sharpe -8.20 (safe-haven, not industrial)
-    silver: 0.12                  # Cap 12% — inconsistent beta at high exposure
-    crude_oil: 0.15               # Cap 15% — Sharpe -2.12, 26% NAV was too much
+    silver: 0.15                  # Cap 15% — top performer (+10%), widened from 12%
+    crude_oil: 0.05               # Token cap 5% — Sharpe -3.07, 23% NAV was structural drag
 
   # ── Exit rules ─────────────────────────────────
   stop_loss_pct: 0.03             # ↓ 3% (from 4%) — cut losers 25% faster
