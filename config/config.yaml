@@ -223,7 +223,7 @@ fundamental:
 # ── Shock detection ───────────────────────────
 shock:
   min_amplitude_pct: 1.5
-  min_zscore: 2.5                   # ↑ from 2.0 — only high-conviction shocks
+  min_zscore: 2.0
   lookback_vol_days: 63
   speed_decay: 0.7
   max_age_days: 5
@@ -231,10 +231,10 @@ shock:
 
 # ── Alpha thresholds ──────────────────────────
 alpha:
-  min_alpha_pct: 2.0                # ↑ from 1.0 — only trade when ≥2% gap expected
+  min_alpha_pct: 1.5                # 1.5% minimum gap (2.0 was filtering too much)
   max_alpha_pct: 15.0
   decay_halflife_days: 3
-  already_priced_ratio: 0.85
+  already_priced_ratio: 0.75        # Take profit at 75% alpha captured (was 0.85)
 
 # ── Scoring weights ───────────────────────────
 scoring:
@@ -243,7 +243,7 @@ scoring:
   leverage_quality_weight: 0.15
   margin_quality_weight: 0.15
   timing_weight: 0.10
-  min_score_to_trade: 0.50          # ↑ from 0.45 — only top-tier signals
+  min_score_to_trade: 0.45
   min_display_score: 0.30
 
 # ── Risk management ───────────────────────────
@@ -251,14 +251,14 @@ risk:
   # Hard position limits
   max_position_pct: 0.04          # ↓ 4% per position (from 5%) — tighter risk
   min_position_pct: 0.005         # Minimum 0.5% (below → discard)
-  max_commodity_exposure: 0.15    # ↓ 15% per commodity (from 20%)
-  max_holding_days: 30            # ↑ 30 calendar days (monthly rebalancing cycle)
+  max_commodity_exposure: 0.18    # 18% per commodity
+  max_holding_days: 12            # 12 days = 4× alpha halflife (was 30 — too long!)
 
   # ── Per-commodity hard caps (overrides Sharpe-weighted allocation) ────
-  # Use to permanently limit noisy commodities regardless of Sharpe history.
-  # natural_gas capped at 3%: too high vol / low signal quality for our beta model.
+  # Caps for commodities where our beta model has weak signal quality.
   commodity_exposure_overrides:
-    natural_gas: 0.03             # Hard cap NG at 3% regardless of Sharpe weight
+    natural_gas: 0.03             # Hard cap NG at 3% — Sharpe -8.12
+    gold: 0.07                    # Hard cap Gold at 7% — Sharpe -7.15
 
   # ── Exit rules ─────────────────────────────────
   # Take Profit: linked to α=0 fair value (price where shock is fully priced)
@@ -283,7 +283,7 @@ risk:
   # 21 trading days ≈ 1 calendar month.
   # At each rebalance: adjust size in-place, replace TP/SL from current price.
   # Never close + reopen — only mutate the existing position.
-  rebalancing_frequency_days: 21   # ↑ Monthly (from 10)
+  rebalancing_frequency_days: 5    # Weekly — aligned with 3-day alpha halflife
   min_cross_commodity_beta: 0.25    # ↑ Stronger beta relationship required (from 0.20)
 
   # ── Regime filter ─────────────────────────────

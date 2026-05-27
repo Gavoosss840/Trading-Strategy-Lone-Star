@@ -458,7 +458,7 @@ def _draw_equity_in_ax(ax: plt.Axes, daily_pnl: pd.DataFrame, title: str) -> Non
 
 
 def _draw_heatmap_in_ax(ax: plt.Axes, monthly_returns: pd.DataFrame, title: str) -> None:
-    """Inline heatmap for the composite report."""
+    """Inline heatmap for the composite report — custom cells + Total column."""
     col = "combined" if "combined" in monthly_returns.columns else monthly_returns.columns[0]
     mr = monthly_returns[col].dropna()
     if mr.empty:
@@ -467,48 +467,79 @@ def _draw_heatmap_in_ax(ax: plt.Axes, monthly_returns: pd.DataFrame, title: str)
                 transform=ax.transAxes)
         return
 
-    df = mr.to_frame("ret")
-    df["year"] = df.index.year
-    df["month"] = df.index.month
-    pivot = df.pivot(index="year", columns="month", values="ret")
-
-    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-    import seaborn as sns
-    pivot_display = pivot.copy()
-    pivot_display.columns = month_labels[:len(pivot_display.columns)]
-
-    mask = pivot_display.isna()
-    annot = pivot_display.applymap(
-        lambda x: f"{x*100:.1f}%" if not pd.isna(x) else ""
-    )
-
     from matplotlib.colors import LinearSegmentedColormap
     cmap = LinearSegmentedColormap.from_list(
         "rwg", ["#c0392b", "#ffffff", "#1a7a4a"], N=256
     )
 
-    sns.heatmap(
-        pivot_display, ax=ax, cmap=cmap, center=0,
-        vmin=-0.08, vmax=0.08,
-        annot=annot, fmt="", annot_kws={"size": 7.5},
-        linewidths=0.5, linecolor="white",
-        cbar_kws={"label": "%", "shrink": 0.6, "format": "%.0f%%"},
-        mask=mask,
-    )
+    df = mr.to_frame("ret")
+    df["year"]  = df.index.year
+    df["month"] = df.index.month
+    pivot = df.pivot(index="year", columns="month", values="ret")
 
-    # Add Total column annotation
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    pivot.columns = month_labels[: len(pivot.columns)]
+
     totals = (1 + pivot.fillna(0)).prod(axis=1) - 1
-    for i, (year, total) in enumerate(totals.items()):
-        color = "#1a7a4a" if total >= 0 else "#c0392b"
-        ax.text(len(pivot_display.columns) + 0.9, i + 0.5,
-                f"{'+' if total >= 0 else ''}{total*100:.1f}%",
-                ha="left", va="center", fontsize=7.5,
-                color=color, fontweight="bold")
 
+    vmax, vmin = 0.08, -0.08
+    n_rows   = len(pivot)
+    n_months = len(pivot.columns)
+    col_w    = 1.0
+    total_w  = 1.3
+
+    for r, (year, row) in enumerate(pivot.iterrows()):
+        # Month cells
+        for c, mcol in enumerate(pivot.columns):
+            val = row.get(mcol, np.nan)
+            if not np.isnan(val):
+                normed = np.clip((val - vmin) / (vmax - vmin), 0, 1)
+                color  = cmap(normed)
+            else:
+                color = "#f0f0f0"
+            rect = mpatches.FancyBboxPatch(
+                (c * col_w, r), col_w * 0.95, 0.85,
+                boxstyle="round,pad=0.02", facecolor=color,
+                edgecolor="white", linewidth=0.5,
+            )
+            ax.add_patch(rect)
+            if not np.isnan(val):
+                txt_color = "white" if abs(val) > 0.04 else "black"
+                ax.text(c * col_w + col_w * 0.475, r + 0.42,
+                        f"{val * 100:.1f}%",
+                        ha="center", va="center",
+                        fontsize=7, color=txt_color, fontweight="bold")
+
+        # Total cell (solid green / red)
+        total_val = float(totals[year])
+        tx      = n_months * col_w + 0.15
+        t_color = "#1a7a4a" if total_val >= 0 else "#c0392b"
+        rect_t  = mpatches.FancyBboxPatch(
+            (tx, r), total_w * 0.88, 0.85,
+            boxstyle="round,pad=0.02", facecolor=t_color,
+            edgecolor="white", linewidth=0.5,
+        )
+        ax.add_patch(rect_t)
+        sign = "+" if total_val >= 0 else ""
+        ax.text(tx + total_w * 0.44, r + 0.42,
+                f"{sign}{total_val * 100:.1f}%",
+                ha="center", va="center",
+                fontsize=7.5, color="white", fontweight="bold")
+
+        # Year label
+        ax.text(-0.55, r + 0.42, str(year),
+                ha="right", va="center", fontsize=8, fontweight="bold")
+
+    # Column headers
+    for c, mcol in enumerate(pivot.columns):
+        ax.text(c * col_w + col_w * 0.475, n_rows + 0.08, mcol,
+                ha="center", va="bottom", fontsize=7.5, fontweight="bold")
+    ax.text(n_months * col_w + 0.15 + total_w * 0.44, n_rows + 0.08, "Total",
+            ha="center", va="bottom", fontsize=7.5,
+            fontweight="bold", color="#1a7a4a")
+
+    ax.set_xlim(-1.0, n_months * col_w + total_w + 0.5)
+    ax.set_ylim(-0.3, n_rows + 0.45)
+    ax.axis("off")
     ax.set_title(title, fontsize=11, fontweight="bold")
-    ax.set_xlabel("")
-    ax.set_ylabel("")
-    ax.tick_params(axis="x", labelsize=8)
-    ax.tick_params(axis="y", labelsize=8)
