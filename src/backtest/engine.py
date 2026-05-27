@@ -685,6 +685,10 @@ def run_backtest(
     momentum_lb  = risk_cfg.get("momentum_lookback_days", 5)
     momentum_adv = risk_cfg.get("momentum_max_adverse_pct", 0.15)
 
+    # ── Portfolio drawdown circuit breaker ────────────────────────────────
+    circuit_window = risk_cfg.get("drawdown_circuit_window_days", 5)
+    circuit_stop   = risk_cfg.get("drawdown_circuit_stop_pct", 0.015)
+
     commodities = list(commodity_returns.columns)
 
     # ── Per-commodity hard exposure caps (override Sharpe-weighted) ───────
@@ -871,8 +875,17 @@ def run_backtest(
         pnl_today = portfolio.update(t, prices_today)
 
         # ── 3. Generate new signals every step_days ───────────────────────
+        # ── Portfolio drawdown circuit breaker ────────────────────────────
+        # If combined P&L dropped > threshold over the last N trading days,
+        # treat today as risk-off for new entries (all signals are wrong → stop).
+        circuit_break_today = False
+        if circuit_window > 0 and len(pnl_rows) >= circuit_window:
+            recent_loss = sum(r["combined"] for r in pnl_rows[-circuit_window:])
+            if recent_loss < -circuit_stop:
+                circuit_break_today = True
+
         # Regime filter: skip new entries on risk-off days
-        risk_off_today = bool(regime_risk_off.get(t, False))
+        risk_off_today = bool(regime_risk_off.get(t, False)) or circuit_break_today
         if i % step_days == 0 and not risk_off_today:
             for commod in commodities:
                 c_series = commodity_returns.loc[:t][commod].dropna()

@@ -249,47 +249,46 @@ scoring:
 # ── Risk management ───────────────────────────
 risk:
   # Hard position limits
-  max_position_pct: 0.04          # ↓ 4% per position (from 5%) — tighter risk
-  min_position_pct: 0.005         # Minimum 0.5% (below → discard)
-  max_commodity_exposure: 0.18    # 18% per commodity
-  max_holding_days: 12            # 12 days = 4× alpha halflife (was 30 — too long!)
+  max_position_pct: 0.06          # ↑ 6% per position (from 4%) — bigger bets on good signals
+  min_position_pct: 0.005
+  max_commodity_exposure: 0.25    # ↑ 25% (from 18%) — more room for Silver/Copper
+  max_holding_days: 12
 
-  # ── Per-commodity hard caps (overrides Sharpe-weighted allocation) ────
-  # Caps for commodities where our beta model has weak signal quality.
+  # ── Per-commodity hard caps ───────────────────
   commodity_exposure_overrides:
-    natural_gas: 0.03             # Hard cap NG at 3% — Sharpe -8.12
-    gold: 0.07                    # Hard cap Gold at 7% — Sharpe -7.15
+    natural_gas: 0.0              # DISABLED — Sharpe -9.91, pure P&L drain
+    gold: 0.04                    # Hard cap 4% — Sharpe -5.30, weak beta model
 
   # ── Exit rules ─────────────────────────────────
-  # Take Profit: linked to α=0 fair value (price where shock is fully priced)
-  #   LONG  → take_profit_price = entry × (1 + |alpha|)
-  #   SHORT → take_profit_price = entry × (1 - |alpha|)
-  #   No fixed % override needed — the signal itself defines the target.
-  #
-  # Stop Loss: max drawdown % from entry (Taurus-style fixed guard)
-  stop_loss_pct: 0.04             # ↓ 4% stop-loss (from 5%) — cut losers faster
+  stop_loss_pct: 0.03             # ↓ 3% (from 4%) — cut losers 25% faster
 
   # ── CML + risk-parity sizing parameters ──────
   # Position size = base_size × boost × composite_score
   # where:
   #   base_size = target_position_risk_pct / sigma_residual_annual  (inverse vol)
   #   boost     = min(SR_signal / reference_sharpe, max_signal_boost)
-  target_position_risk_pct: 0.01  # Target 1% annual idiosyncratic vol per position
+  target_position_risk_pct: 0.015 # ↑ 1.5% target vol → larger base positions
   reference_sharpe: 0.50          # Boost = 1× at SR=0.50, 2× at SR=1.0
-  max_signal_boost: 2.0           # Cap boost at 2× (prevents over-concentration)
+  max_signal_boost: 3.0           # ↑ 3× boost — reward high-conviction signals more
 
   # ── Rebalancing ────────────────────────────────
   # Re-evaluate every open position every N trading days.
   # 21 trading days ≈ 1 calendar month.
   # At each rebalance: adjust size in-place, replace TP/SL from current price.
   # Never close + reopen — only mutate the existing position.
-  rebalancing_frequency_days: 5    # Weekly — aligned with 3-day alpha halflife
-  min_cross_commodity_beta: 0.25    # ↑ Stronger beta relationship required (from 0.20)
+  rebalancing_frequency_days: 5
+  min_cross_commodity_beta: 0.25
+
+  # ── Portfolio drawdown circuit breaker ────────
+  # Block ALL new entries if combined P&L dropped >threshold over last N days.
+  # Prevents cascading losses when macro stress collapses all correlations.
+  drawdown_circuit_window_days: 5   # Rolling window (trading days)
+  drawdown_circuit_stop_pct: 0.015  # 1.5% portfolio loss in window → risk-off
 
   # ── Regime filter ─────────────────────────────
   # Block new entries when market is risk-off (correlations collapse alpha).
   # VIX > threshold = fear elevated; correl > threshold = market dominates all moves.
-  regime_vix_threshold: 22.0       # ↓ from 25.0 — block entries earlier during fear
+  regime_vix_threshold: 20.0       # ↓ 20 — earlier protection against macro stress
   regime_correl_threshold: 0.70     # |rolling correl(SPY, avg commodity)| > this = risk-off
   regime_correl_window: 30          # ↑ Smoother estimate (from 20 days)
 
