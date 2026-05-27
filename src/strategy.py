@@ -279,6 +279,9 @@ class LoneStarStrategy:
             rolling_window=rolling_window,
             min_observations=min_obs,
             outlier_zscore=beta_cfg.get("outlier_zscore_threshold", 3.5),
+            market_returns=(
+                market_returns if beta_cfg.get("use_market_adjusted", True) else None
+            ),
         )
         result.exposure_map = exposure_map
         if verbose:

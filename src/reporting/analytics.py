@@ -81,6 +81,7 @@ def compute_metrics(
     universe: str,
     trades: Optional[List[Trade]] = None,
     monthly_returns: Optional[pd.Series] = None,
+    risk_free_annual: float = 0.0,
 ) -> PerformanceMetrics:
     """Compute all performance metrics from a daily P&L series."""
     pnl = daily_pnl.dropna()
@@ -96,7 +97,7 @@ def compute_metrics(
 
     annual_ret = float((1 + total_ret) ** (1 / n_years) - 1)
     vol = float(pnl.std() * np.sqrt(252))
-    sharpe = annual_ret / vol if vol > 0 else 0.0
+    sharpe = (annual_ret - risk_free_annual) / vol if vol > 0 else 0.0
 
     # Max drawdown
     roll_max = equity.cummax()
@@ -161,7 +162,10 @@ def _empty_metrics(universe: str) -> PerformanceMetrics:
 
 # ── From BacktestResult ───────────────────────────────────────────────────────
 
-def compute_all_metrics(result: BacktestResult) -> Dict[str, PerformanceMetrics]:
+def compute_all_metrics(
+    result: BacktestResult,
+    risk_free_annual: float = 0.0,
+) -> Dict[str, PerformanceMetrics]:
     """
     Compute metrics for every commodity column + combined.
 
@@ -182,6 +186,7 @@ def compute_all_metrics(result: BacktestResult) -> Dict[str, PerformanceMetrics]
             universe=col,
             trades=trades_col,
             monthly_returns=monthly_series,
+            risk_free_annual=risk_free_annual,
         )
 
     return metrics

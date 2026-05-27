@@ -124,6 +124,36 @@ def _classify_role(beta: float, threshold: float = 0.05) -> str:
     return "neutral"
 
 
+def _market_adjusted_ols(
+    x: np.ndarray,
+    y: np.ndarray,
+    m: np.ndarray,
+) -> Tuple[float, float, float, float, float, int]:
+    """
+    Frisch-Waugh market-adjusted OLS beta.
+
+    Partial out the market factor from both stock and commodity returns,
+    then regress stock residuals on commodity residuals. This isolates the
+    net commodity sensitivity after removing the common market component.
+    """
+    n = len(x)
+    if n < 30:
+        return 0.0, 0.0, 0.0, 1.0, np.nan, n
+
+    def _partial(series: np.ndarray, mkt: np.ndarray) -> np.ndarray:
+        sl, ic, _, _, _ = stats.linregress(mkt, series)
+        return series - (ic + sl * mkt)
+
+    y_res = _partial(y, m)
+    x_res = _partial(x, m)
+
+    slope, intercept, r_value, p_value, std_err = stats.linregress(x_res, y_res)
+    return (
+        float(slope), float(intercept), float(r_value ** 2),
+        float(p_value), float(std_err), n,
+    )
+
+
 # ── Main estimation function ──────────────────────────────────────────────────
 
 def estimate_betas(
@@ -132,6 +162,7 @@ def estimate_betas(
     min_observations: int = 120,
     outlier_zscore: float = 3.5,
     rolling_window: Optional[int] = None,
+    market_returns: Optional[pd.Series] = None,
 ) -> ExposureMap:
     """
     Estimate commodity betas for every (stock, commodity) pair.
@@ -142,6 +173,8 @@ def estimate_betas(
         min_observations    : Minimum shared observations for regression
         outlier_zscore      : Z-score threshold for outlier removal
         rolling_window      : If set, use last N observations only
+        market_returns      : Optional market index returns for Frisch-Waugh
+                              market-adjusted beta (removes common market factor)
 
     Returns:
         ExposureMap with BetaResult for each (stock, commodity) pair.
@@ -156,6 +189,10 @@ def estimate_betas(
     if rolling_window is not None:
         stocks = stocks.iloc[-rolling_window:]
         commodities = commodities.iloc[-rolling_window:]
+
+    mkt_series: Optional[pd.Series] = None
+    if market_returns is not None:
+        mkt_series = market_returns.reindex(stocks.index).fillna(0)
 
     for ticker in stocks.columns:
         for commodity in commodities.columns:
@@ -176,7 +213,18 @@ def estimate_betas(
             if len(x_clean) < min_observations:
                 continue
 
-            beta, alpha_intercept, r2, pval, stderr, n = _ols_beta(x_clean, y_clean)
+            if mkt_series is not None:
+                # Keep only the common index rows after outlier filtering
+                common_clean = y_full.loc[common].iloc[:len(y_clean)].index
+                m_clean = mkt_series.loc[common_clean].values if len(common_clean) == len(x_clean) else None
+                if m_clean is not None and len(m_clean) == len(x_clean):
+                    beta, alpha_intercept, r2, pval, stderr, n = _market_adjusted_ols(
+                        x_clean, y_clean, m_clean
+                    )
+                else:
+                    beta, alpha_intercept, r2, pval, stderr, n = _ols_beta(x_clean, y_clean)
+            else:
+                beta, alpha_intercept, r2, pval, stderr, n = _ols_beta(x_clean, y_clean)
 
             result = BetaResult(
                 ticker=ticker,
@@ -200,10 +248,12 @@ def get_latest_betas(
     rolling_window: int = 252,
     min_observations: int = 120,
     outlier_zscore: float = 3.5,
+    market_returns: Optional[pd.Series] = None,
 ) -> ExposureMap:
     """
     Convenience wrapper — estimate betas using the last `rolling_window` days.
     This is the primary entry point used by the strategy pipeline.
+    Pass market_returns to enable Frisch-Waugh market-adjusted beta.
     """
     return estimate_betas(
         stock_returns=stock_returns,
@@ -211,6 +261,7 @@ def get_latest_betas(
         min_observations=min_observations,
         outlier_zscore=outlier_zscore,
         rolling_window=rolling_window,
+        market_returns=market_returns,
     )
 
 

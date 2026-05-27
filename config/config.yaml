@@ -203,12 +203,16 @@ data:
   shock_lookback_days: 63
   min_observations: 120
   risk_free_rate_ticker: "^IRX"
+  min_avg_daily_volume_usd: 500000   # ADV liquidity filter (USD) for backtest engine
 
 # ── Beta estimation ───────────────────────────
 beta:
   rolling_window: 252
   min_r_squared: 0.05
   outlier_zscore_threshold: 3.5
+  ewma_halflife_days: 63            # EWMA decay halflife (days)
+  use_ewma: true                    # EWMA weighting vs equal-weight rolling
+  use_market_adjusted: true         # Frisch-Waugh market-adjusted beta
 
 # ── Fundamental adjustment ────────────────────
 fundamental:
@@ -224,6 +228,7 @@ shock:
   lookback_vol_days: 63
   speed_decay: 0.7
   max_age_days: 5
+  max_accumulation_days: 3          # Scan 1/2/3-day accumulated shock windows
 
 # ── Alpha thresholds ──────────────────────────
 alpha:
@@ -274,6 +279,7 @@ risk:
   # At each rebalance: adjust size in-place, replace TP/SL from current price.
   # Never close + reopen — only mutate the existing position.
   rebalancing_frequency_days: 2
+  min_cross_commodity_beta: 0.20    # Minimum |beta| to consider cross-commodity signal
 
 # ── Execution (live trading / IBKR) ───────────
 execution:
@@ -298,6 +304,10 @@ execution:
   # exceeds this fraction of the stock's 20-day average daily volume in USD.
   # 0.05 = position must be ≤ 5% of 20-day ADV.
   adv_filter_pct: 0.05
+
+  # Transaction costs — passed to backtest engine as slippage per leg.
+  # 10 bps / 2 = 5 bps per leg (conservative estimate for liquid mid/large-caps).
+  transaction_cost_bps: 10
 
 # ── Output ────────────────────────────────────
 output:

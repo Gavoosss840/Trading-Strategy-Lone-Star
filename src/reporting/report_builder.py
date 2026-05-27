@@ -91,6 +91,8 @@ def build_reports(
     stock_volumes    = data.get("stock_volumes")      # may be None if download failed
     commodity_returns = data["commodity_returns"]
     market_returns   = data["market_returns"]
+    risk_free_series  = data.get("risk_free_rate", pd.Series(dtype=float))
+    risk_free_annual  = float(risk_free_series.mean() * 252) if not risk_free_series.empty else 0.0
 
     log(f"     {len(stock_returns.columns)} stocks × {len(commodity_returns.columns)} commodities loaded")
 
@@ -112,7 +114,7 @@ def build_reports(
 
     # ── Compute analytics ──────────────────────────────────────────────────
     log("  [3/5] Computing analytics...")
-    metrics = compute_all_metrics(bt_result)
+    metrics = compute_all_metrics(bt_result, risk_free_annual=risk_free_annual)
 
     # ── Generate charts ────────────────────────────────────────────────────
     log("  [4/5] Generating charts...")
