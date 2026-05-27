@@ -91,6 +91,7 @@ def build_reports(
     stock_volumes    = data.get("stock_volumes")      # may be None if download failed
     commodity_returns = data["commodity_returns"]
     market_returns   = data["market_returns"]
+    vix_series       = data.get("vix_series")         # for regime filter
     risk_free_series  = data.get("risk_free_rate", pd.Series(dtype=float))
     risk_free_annual  = float(risk_free_series.mean() * 252) if not risk_free_series.empty else 0.0
 
@@ -107,6 +108,7 @@ def build_reports(
         cfg=cfg,
         step_days=1,
         stock_volumes=stock_volumes,
+        vix_series=vix_series,
     )
 
     commodities = bt_result.commodities

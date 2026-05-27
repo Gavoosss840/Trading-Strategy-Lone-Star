@@ -281,6 +281,24 @@ risk:
   rebalancing_frequency_days: 2
   min_cross_commodity_beta: 0.20    # Minimum |beta| to consider cross-commodity signal
 
+  # ── Regime filter ─────────────────────────────
+  # Block new entries when market is risk-off (correlations collapse alpha).
+  # VIX > threshold = fear elevated; correl > threshold = market dominates all moves.
+  regime_vix_threshold: 25.0
+  regime_correl_threshold: 0.70     # |rolling correl(SPY, avg commodity)| > this = risk-off
+  regime_correl_window: 20          # Rolling window in trading days
+
+  # ── Concentration cap ─────────────────────────
+  # Prevents hidden concentration: 15 crude-oil LONGs on the same shock ≠ diversification.
+  # Only the top N signals (sorted by |alpha| × shock_score) are opened per commodity shock.
+  max_positions_per_shock: 5
+
+  # ── Vol-adjusted stop-loss ────────────────────
+  # Stop = max(fixed_stop_loss_pct, atr_multiplier × 14d_daily_vol).
+  # Gives high-vol stocks more room; avoids stopping out on normal noise.
+  atr_stop_multiplier: 2.0          # N × 14-day rolling daily vol
+  max_atr_stop_pct: 0.12            # Hard cap on vol-adjusted stop (12%)
+
 # ── Execution (live trading / IBKR) ───────────
 execution:
   # Portfolio NAV in USD — used to compute whole-share quantities.

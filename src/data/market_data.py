@@ -242,7 +242,7 @@ def load_all_data(
       - risk_free_rate
       - ff_factors  (may be None)
     """
-    all_tickers = list(set(stock_tickers + ["^GSPC", "^IRX"]))
+    all_tickers = list(set(stock_tickers + ["^GSPC", "^IRX", "^VIX"]))
     commodity_tickers = [cfg["ticker"] for cfg in commodity_config.values()]
     all_tickers += commodity_tickers
 
@@ -279,6 +279,9 @@ def load_all_data(
         else pd.Series(0.0, index=prices.index)
     )
 
+    # VIX level series — used by backtest engine for regime filter
+    vix_series = prices["^VIX"] if "^VIX" in prices.columns else None
+
     ff_factors = get_fama_french_factors(lookback_days=lookback_days)
 
     return {
@@ -288,6 +291,7 @@ def load_all_data(
         "commodity_returns": commodity_returns,
         "market_returns": market_returns,
         "risk_free_rate": risk_free,
+        "vix_series": vix_series,
         "ff_factors": ff_factors,
     }
 

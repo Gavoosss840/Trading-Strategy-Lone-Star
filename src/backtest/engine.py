@@ -288,6 +288,9 @@ def _rebalance_portfolio(
     ar_ratio: float,
     slippage_pct: float = 0.0,
     speed_decay: float = 0.7,
+    stock_vol_14d: Optional[pd.DataFrame] = None,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
 ) -> None:
     """
     Re-evaluate every open position. Adjust size in-place; NEVER close+reopen.
@@ -411,13 +414,21 @@ def _rebalance_portfolio(
         gate       = float(np.clip((shock_amp / 0.05) / 2 * np.tanh(shock_z / 2), 0, 1))
         new_size   = float(np.clip(base_size * boost * gate, min_pos, max_pos))
 
+        # Vol-adjusted stop-loss (wider for high-vol stocks)
+        eff_stop = stop_loss_pct
+        if stock_vol_14d is not None:
+            if current_date in stock_vol_14d.index and trade.ticker in stock_vol_14d.columns:
+                dv = float(stock_vol_14d.at[current_date, trade.ticker])
+                if not np.isnan(dv) and dv > 0:
+                    eff_stop = max(stop_loss_pct, min(atr_multiplier * dv, max_atr_stop))
+
         # Trailing TP/SL reset from current price
         if trade.direction == "LONG":
             new_tp = current_price * (1.0 + abs_alpha)
-            new_sl = current_price * (1.0 - stop_loss_pct)
+            new_sl = current_price * (1.0 - eff_stop)
         else:
             new_tp = current_price * (1.0 - abs_alpha)
-            new_sl = current_price * (1.0 + stop_loss_pct)
+            new_sl = current_price * (1.0 + eff_stop)
 
         trade.size               = new_size
         trade.alpha_at_entry     = abs_alpha
@@ -559,6 +570,7 @@ def run_backtest(
     step_days: int = 1,
     sector_returns: Optional[Dict[str, pd.Series]] = None,
     stock_volumes: Optional[pd.DataFrame] = None,
+    vix_series: Optional[pd.Series] = None,
 ) -> BacktestResult:
     """
     Walk-forward backtest — Lone Star v2 with all quant optimisations.
@@ -571,11 +583,9 @@ def run_backtest(
         stock_metadata    : DataFrame(ticker → zone, primary_commodity, role)
         cfg               : Full YAML config dict
         step_days         : Re-scan for NEW signals every N days (1 = daily)
-        sector_returns    : {commodity_key: Series} — sector ETF returns
-                            (reserved for future extension; not yet used in
-                            residual cleaning to avoid factor orthogonality issues)
-        stock_volumes     : DataFrame [dates × tickers] daily share volume
-                            used to compute rolling ADV for liquidity filter
+        sector_returns    : {commodity_key: Series} — reserved for future extension
+        stock_volumes     : DataFrame [dates × tickers] daily share volume (ADV filter)
+        vix_series        : VIX level series for regime filter (^VIX prices)
     """
     beta_cfg  = cfg["beta"]
     shock_cfg = cfg["shock"]
@@ -611,6 +621,18 @@ def run_backtest(
     slippage_pct = exec_cfg.get("transaction_cost_bps", 10) / 10_000 / 2  # per leg
     min_adv_usd  = data_cfg.get("min_avg_daily_volume_usd", 0)
 
+    # ── Regime filter params ──────────────────────────────────────────────
+    vix_threshold    = risk_cfg.get("regime_vix_threshold", 25.0)
+    correl_threshold = risk_cfg.get("regime_correl_threshold", 0.70)
+    correl_window    = risk_cfg.get("regime_correl_window", 20)
+
+    # ── Concentration cap ─────────────────────────────────────────────────
+    max_pos_per_shock = risk_cfg.get("max_positions_per_shock", 5)
+
+    # ── Vol-adjusted stop-loss ────────────────────────────────────────────
+    atr_multiplier = risk_cfg.get("atr_stop_multiplier", 2.0)
+    max_atr_stop   = risk_cfg.get("max_atr_stop_pct", 0.12)
+
     commodities = list(commodity_returns.columns)
 
     # ── Pre-compute rolling ADV for liquidity filter ──────────────────────
@@ -620,6 +642,9 @@ def run_backtest(
         if len(common_v) > 0:
             notional = stock_prices[common_v] * stock_volumes[common_v]
             rolling_adv = notional.rolling(20, min_periods=5).mean()
+
+    # ── Pre-compute 14-day rolling vol per stock (for vol-adj stop-loss) ─
+    stock_vol_14d = stock_returns.rolling(14, min_periods=5).std()
 
     # ── Pre-compute betas and residuals ───────────────────────────────────
     beta_method = (
@@ -689,6 +714,32 @@ def run_backtest(
     common_dates = stock_returns.index.intersection(commodity_returns.index)
     sim_dates    = common_dates[lookback:]
 
+    # ── Pre-compute regime risk-off flags ─────────────────────────────────
+    # VIX level > threshold OR rolling |correl(mkt, avg commodity)| > threshold
+    regime_risk_off = pd.Series(False, index=common_dates, dtype=bool)
+
+    if vix_series is not None:
+        vix_aligned = vix_series.reindex(common_dates).ffill()
+        regime_risk_off |= (vix_aligned > vix_threshold).fillna(False)
+
+    if mkt is not None:
+        commod_avg = commodity_returns.reindex(common_dates).mean(axis=1)
+        mkt_aligned = mkt.reindex(common_dates).fillna(0)
+        roll_correl = (
+            mkt_aligned
+            .rolling(correl_window, min_periods=max(correl_window // 2, 5))
+            .corr(commod_avg)
+            .abs()
+        )
+        regime_risk_off |= (roll_correl > correl_threshold).fillna(False)
+
+    regime_risk_off = regime_risk_off.reindex(sim_dates, fill_value=False)
+
+    n_risk_off = int(regime_risk_off.sum())
+    if n_risk_off > 0:
+        print(f"  [BT] Regime filter: {n_risk_off}/{len(sim_dates)} days flagged risk-off "
+              f"(VIX>{vix_threshold} or |correl|>{correl_threshold})")
+
     portfolio  = Portfolio(stop_loss, max_hold, slippage_pct)
     all_cols   = commodities + ["combined"]
     pnl_rows: List[dict] = []
@@ -708,28 +759,33 @@ def run_backtest(
         # ── 1. Rebalance open positions ───────────────────────────────────
         if i > 0 and i % rebal_freq == 0 and portfolio.open_trades:
             _rebalance_portfolio(
-                portfolio     = portfolio,
-                current_date  = t,
-                prices        = prices_today,
-                betas         = betas,
-                residuals     = residuals,
-                commod_vol    = commod_vol,
-                risk_cfg      = risk_cfg,
-                min_alpha     = min_alpha,
-                min_amp       = min_amp,
-                min_z         = min_z,
-                stop_loss_pct = stop_loss,
-                max_age       = max_age,
-                ar_ratio      = ar_ratio,
-                slippage_pct  = slippage_pct,
-                speed_decay   = speed_decay,
+                portfolio      = portfolio,
+                current_date   = t,
+                prices         = prices_today,
+                betas          = betas,
+                residuals      = residuals,
+                commod_vol     = commod_vol,
+                risk_cfg       = risk_cfg,
+                min_alpha      = min_alpha,
+                min_amp        = min_amp,
+                min_z          = min_z,
+                stop_loss_pct  = stop_loss,
+                max_age        = max_age,
+                ar_ratio       = ar_ratio,
+                slippage_pct   = slippage_pct,
+                speed_decay    = speed_decay,
+                stock_vol_14d  = stock_vol_14d,
+                atr_multiplier = atr_multiplier,
+                max_atr_stop   = max_atr_stop,
             )
 
         # ── 2. Mark-to-market (TP / SL / expiry) ─────────────────────────
         pnl_today = portfolio.update(t, prices_today)
 
         # ── 3. Generate new signals every step_days ───────────────────────
-        if i % step_days == 0:
+        # Regime filter: skip new entries on risk-off days
+        risk_off_today = bool(regime_risk_off.get(t, False))
+        if i % step_days == 0 and not risk_off_today:
             for commod in commodities:
                 c_series = commodity_returns.loc[:t][commod].dropna()
                 if len(c_series) < vol_window + max_accum + 2:
@@ -738,21 +794,35 @@ def run_backtest(
                 vol_series = commod_vol.loc[:t][commod].dropna()
 
                 shock_result = _scan_best_shock(
-                    c_series   = c_series.iloc[-(max_age + max_accum + 2):],
-                    vol_series = vol_series,
-                    min_amp    = min_amp,
-                    min_z      = min_z,
-                    speed_decay= speed_decay,
-                    max_age    = max_age,
-                    max_accum  = max_accum,
+                    c_series    = c_series.iloc[-(max_age + max_accum + 2):],
+                    vol_series  = vol_series,
+                    min_amp     = min_amp,
+                    min_z       = min_z,
+                    speed_decay = speed_decay,
+                    max_age     = max_age,
+                    max_accum   = max_accum,
                 )
                 if shock_result is None:
                     continue
 
                 shock_ret, shock_score, shock_age, shock_date = shock_result
-                shock_amp = abs(shock_ret)
 
-                # ── Cross-commodity: ALL stocks, not just primary_commodity ──
+                # Current commodity exposure — bail early if already full
+                cur_commod_exp = sum(
+                    tr.size for tr in portfolio.open_trades
+                    if tr.commodity == commod
+                )
+                if cur_commod_exp >= max_commod_exp:
+                    continue
+
+                # ── Collect all candidate signals (concentration cap) ──────
+                # Score every eligible stock, sort by quality, keep top N.
+                candidates: List[dict] = []
+
+                target_risk = risk_cfg.get("target_position_risk_pct", 0.01)
+                ref_sr      = risk_cfg.get("reference_sharpe", 0.50)
+                max_boost_v = risk_cfg.get("max_signal_boost", 2.0)
+
                 for ticker in stocks_available:
 
                     # ADV liquidity filter
@@ -769,7 +839,6 @@ def run_backtest(
                     if beta_series is None or t not in beta_series.index:
                         continue
                     beta_val = float(beta_series.loc[t])
-                    # Cross-commodity minimum beta gate
                     if np.isnan(beta_val) or abs(beta_val) < min_cross_beta:
                         continue
 
@@ -789,33 +858,17 @@ def run_backtest(
 
                     direction = "LONG" if alpha > 0 else "SHORT"
 
-                    # ── Commodity exposure cap ────────────────────────────
-                    cur_exp = sum(
-                        tr.size for tr in portfolio.open_trades
-                        if tr.commodity == commod
-                    )
-                    if cur_exp >= max_commod_exp:
-                        continue
+                    # CML position sizing
+                    recent_r   = resid_series.loc[:t].iloc[-63:]
+                    sigma_ann  = float(recent_r.std() * np.sqrt(252)) if len(recent_r) > 5 else 0.25
+                    sigma_ann  = max(sigma_ann, 0.05)
+                    sigma_hold = max(sigma_ann * np.sqrt(max_age / 252), 1e-4)
+                    sharpe_sig = abs(alpha) / sigma_hold
 
-                    # ── CML position sizing ───────────────────────────────
-                    recent_r     = resid_series.loc[:t].iloc[-63:]
-                    sigma_ann    = float(recent_r.std() * np.sqrt(252)) if len(recent_r) > 5 else 0.25
-                    sigma_ann    = max(sigma_ann, 0.05)
-                    sigma_hold   = max(sigma_ann * np.sqrt(max_age / 252), 1e-4)
-                    sharpe_sig   = abs(alpha) / sigma_hold
-
-                    target_risk  = risk_cfg.get("target_position_risk_pct", 0.01)
-                    ref_sr       = risk_cfg.get("reference_sharpe", 0.50)
-                    max_boost_v  = risk_cfg.get("max_signal_boost", 2.0)
-                    base_size    = float(np.clip(target_risk / sigma_ann, 0.0, max_pos))
-                    boost        = float(np.clip(sharpe_sig / ref_sr, 0.0, max_boost_v))
-                    gate         = float(np.clip(shock_score, 0.0, 1.0))
-                    size         = float(np.clip(base_size * boost * gate, min_pos, max_pos))
-
-                    # Don't breach commodity cap
-                    size = min(size, max_commod_exp - cur_exp)
-                    if size < min_pos:
-                        continue
+                    base_size  = float(np.clip(target_risk / sigma_ann, 0.0, max_pos))
+                    boost      = float(np.clip(sharpe_sig / ref_sr, 0.0, max_boost_v))
+                    gate       = float(np.clip(shock_score, 0.0, 1.0))
+                    size       = float(np.clip(base_size * boost * gate, min_pos, max_pos))
 
                     if t not in stock_prices.index or ticker not in stock_prices.columns:
                         continue
@@ -823,42 +876,77 @@ def run_backtest(
                     if np.isnan(raw_price) or raw_price <= 0:
                         continue
 
-                    # Apply entry-side slippage
+                    # Vol-adjusted stop-loss: max(fixed, atr_mult × 14d_daily_vol)
+                    eff_stop = stop_loss
+                    if t in stock_vol_14d.index and ticker in stock_vol_14d.columns:
+                        dv = float(stock_vol_14d.at[t, ticker])
+                        if not np.isnan(dv) and dv > 0:
+                            eff_stop = max(stop_loss, min(atr_multiplier * dv, max_atr_stop))
+
+                    # Quality score for ranking (|alpha| × shock quality × size)
+                    quality = abs(alpha) * shock_score * gate
+
+                    candidates.append({
+                        "ticker":    ticker,
+                        "alpha":     alpha,
+                        "size":      size,
+                        "direction": direction,
+                        "raw_price": raw_price,
+                        "eff_stop":  eff_stop,
+                        "quality":   quality,
+                        "role": (
+                            stock_metadata.loc[ticker, "role"]
+                            if ticker in stock_metadata.index else ""
+                        ),
+                    })
+
+                # ── Sort by quality desc; keep top N (concentration cap) ───
+                candidates.sort(key=lambda c: c["quality"], reverse=True)
+
+                remaining_cap = max_commod_exp - cur_commod_exp
+                for cand in candidates[:max_pos_per_shock]:
+                    if remaining_cap < min_pos:
+                        break
+
+                    size = min(cand["size"], remaining_cap)
+                    if size < min_pos:
+                        continue
+
+                    direction   = cand["direction"]
+                    raw_price   = cand["raw_price"]
+                    eff_stop    = cand["eff_stop"]
+
                     entry_price = (
                         raw_price * (1.0 + slippage_pct) if direction == "LONG"
                         else raw_price * (1.0 - slippage_pct)
                     )
+                    abs_alpha = abs(cand["alpha"])
 
-                    abs_alpha = abs(alpha)
                     if direction == "LONG":
                         tp_price = entry_price * (1.0 + abs_alpha)
-                        sl_price = entry_price * (1.0 - stop_loss)
+                        sl_price = entry_price * (1.0 - eff_stop)
                     else:
                         tp_price = entry_price * (1.0 - abs_alpha)
-                        sl_price = entry_price * (1.0 + stop_loss)
-
-                    role = (
-                        stock_metadata.loc[ticker, "role"]
-                        if ticker in stock_metadata.index else ""
-                    )
+                        sl_price = entry_price * (1.0 + eff_stop)
 
                     trade = Trade(
-                        ticker               = ticker,
-                        commodity            = commod,
-                        direction            = direction,
-                        role                 = role,
-                        entry_date           = t,
-                        entry_price          = entry_price,
-                        size                 = size,
-                        alpha_at_entry       = abs_alpha,
-                        take_profit_price    = tp_price,
-                        stop_loss_price      = sl_price,
-                        prev_price           = entry_price,   # for daily P&L
+                        ticker                = cand["ticker"],
+                        commodity             = commod,
+                        direction             = direction,
+                        role                  = cand["role"],
+                        entry_date            = t,
+                        entry_price           = entry_price,
+                        size                  = size,
+                        alpha_at_entry        = abs_alpha,
+                        take_profit_price     = tp_price,
+                        stop_loss_price       = sl_price,
+                        prev_price            = entry_price,
                         original_shock_return = shock_ret,
-                        original_shock_date  = shock_date,
-                        original_shock_age   = shock_age,
+                        original_shock_date   = shock_date,
+                        original_shock_age    = shock_age,
                     )
                     portfolio.open_position(trade)
+                    remaining_cap -= size
 
         # Record daily P&L
         row = {c: pnl_today.get(c, 0.0) for c in commodities}
