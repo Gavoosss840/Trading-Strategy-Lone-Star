@@ -208,7 +208,7 @@ data:
 # ── Beta estimation ───────────────────────────
 beta:
   rolling_window: 252
-  min_r_squared: 0.05
+  min_r_squared: 0.08
   outlier_zscore_threshold: 3.5
   ewma_halflife_days: 63            # EWMA decay halflife (days)
   use_ewma: true                    # EWMA weighting vs equal-weight rolling
@@ -224,7 +224,7 @@ fundamental:
 # ── Shock detection ───────────────────────────
 shock:
   min_amplitude_pct: 1.5
-  min_zscore: 1.5
+  min_zscore: 2.0
   lookback_vol_days: 63
   speed_decay: 0.7
   max_age_days: 5
@@ -232,7 +232,7 @@ shock:
 
 # ── Alpha thresholds ──────────────────────────
 alpha:
-  min_alpha_pct: 0.5
+  min_alpha_pct: 1.0
   max_alpha_pct: 15.0
   decay_halflife_days: 3
   already_priced_ratio: 0.85
@@ -253,7 +253,7 @@ risk:
   max_position_pct: 0.05          # Maximum 5% per position
   min_position_pct: 0.005         # Minimum 0.5% (below → discard)
   max_commodity_exposure: 0.20    # Maximum 20% gross exposure per commodity
-  max_holding_days: 10            # Force-close after 10 days
+  max_holding_days: 7             # Force-close after 7 days (alpha decays ~3d halflife)
 
   # ── Exit rules ─────────────────────────────────
   # Take Profit: linked to α=0 fair value (price where shock is fully priced)
@@ -291,7 +291,7 @@ risk:
   # ── Concentration cap ─────────────────────────
   # Prevents hidden concentration: 15 crude-oil LONGs on the same shock ≠ diversification.
   # Only the top N signals (sorted by |alpha| × shock_score) are opened per commodity shock.
-  max_positions_per_shock: 5
+  max_positions_per_shock: 3
 
   # ── Vol-adjusted stop-loss ────────────────────
   # Stop = max(fixed_stop_loss_pct, atr_multiplier × 14d_daily_vol).
