@@ -234,7 +234,7 @@ alpha:
   min_alpha_pct: 1.5                # 1.5% minimum gap (2.0 was filtering too much)
   max_alpha_pct: 15.0
   decay_halflife_days: 3
-  already_priced_ratio: 0.75        # Take profit at 75% alpha captured (was 0.85)
+  already_priced_ratio: 0.70        # ↓ 70% — lock in profits faster before reversal
 
 # ── Scoring weights ───────────────────────────
 scoring:
@@ -256,8 +256,9 @@ risk:
 
   # ── Per-commodity hard caps ───────────────────
   commodity_exposure_overrides:
-    natural_gas: 0.0              # DISABLED — Sharpe -9.91, pure P&L drain
-    gold: 0.04                    # Hard cap 4% — Sharpe -5.30, weak beta model
+    natural_gas: 0.0              # DISABLED — Sharpe -9.91
+    gold: 0.02                    # ↓ 2% (from 4%) — Sharpe -5.01, still hurts
+    silver: 0.12                  # Cap 12% — turns negative with 6% positions
 
   # ── Exit rules ─────────────────────────────────
   stop_loss_pct: 0.03             # ↓ 3% (from 4%) — cut losers 25% faster
@@ -283,7 +284,7 @@ risk:
   # Block ALL new entries if combined P&L dropped >threshold over last N days.
   # Prevents cascading losses when macro stress collapses all correlations.
   drawdown_circuit_window_days: 5   # Rolling window (trading days)
-  drawdown_circuit_stop_pct: 0.015  # 1.5% portfolio loss in window → risk-off
+  drawdown_circuit_stop_pct: 0.010  # ↓ 1.0% (from 1.5%) — more reactive protection
 
   # ── Regime filter ─────────────────────────────
   # Block new entries when market is risk-off (correlations collapse alpha).
@@ -295,7 +296,7 @@ risk:
   # ── Concentration cap ─────────────────────────
   # Prevents hidden concentration: 15 crude-oil LONGs on the same shock ≠ diversification.
   # Only the top N signals (sorted by |alpha| × shock_score) are opened per commodity shock.
-  max_positions_per_shock: 2        # ↓ from 3 — only the 2 best signals per shock
+  max_positions_per_shock: 3        # ↑ back to 3 — Copper needs more slots
 
   # ── Vol-adjusted stop-loss ────────────────────
   # Stop = max(fixed_stop_loss_pct, atr_multiplier × 14d_daily_vol).
