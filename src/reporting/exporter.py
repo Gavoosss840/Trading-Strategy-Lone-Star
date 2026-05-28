@@ -156,29 +156,58 @@ def export_positions(
 
 # ── execution_{commodity}_{date}.json ─────────────────────────────────────────
 
-def _signal_to_execution_record(s, nav_total: float) -> dict:
+def _vol_adjusted_sl(
+    s,
+    stop_loss_pct: float,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
+) -> float:
+    """
+    Compute per-signal vol-adjusted stop distance: max(static, atr_mult × daily_vol).
+    Uses residual_vol_annual from the scorer (same vol used for sizing).
+    Falls back to static stop_loss_pct if vol data is unavailable.
+    """
+    vol_ann = getattr(s, "residual_vol_annual", None) or 0.0
+    if vol_ann > 0:
+        daily_vol = vol_ann / (252 ** 0.5)
+        vol_stop  = atr_multiplier * daily_vol
+        return max(stop_loss_pct, min(vol_stop, max_atr_stop))
+    return stop_loss_pct
+
+
+def _signal_to_execution_record(
+    s,
+    nav_total: float,
+    stop_loss_pct: float = 0.03,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
+    tp_alpha_ratio: float = 1.0,
+) -> dict:
     """
     Convert a ScoredSignal to an execution order record with TP/SL levels.
 
-    Take Profit price = entry fair-value when α = 0 (shock fully priced):
-      LONG  → any reference price × (1 + |alpha|)
-      SHORT → any reference price × (1 − |alpha|)
+    Take Profit  = last_price × (1 ± |alpha| × tp_alpha_ratio)
+    Stop Loss    = last_price × (1 ∓ eff_stop)  where eff_stop is vol-adjusted
 
-    Note: live signals have no entry price yet (not yet traded), so TP/SL
-    are expressed as |alpha|% distances from the execution price — the
-    broker/OMS should apply them at fill.
-
-    Returns (record_dict, whole_shares) where whole_shares = floor(target_notional / price).
-    Callers decide whether to route to execution file or manual report.
+    All prices are from the last market close. Adjust limit_price before placing.
     """
-    abs_alpha = abs(s.alpha)
+    abs_alpha  = abs(s.alpha)
+    abs_tp_dist = abs_alpha * tp_alpha_ratio
+    eff_stop   = _vol_adjusted_sl(s, stop_loss_pct, atr_multiplier, max_atr_stop)
+
     target_dollars = nav_total * s.position_size_pct
-    # Whole-share quantity for IBKR (no fractional shares via API)
     price = getattr(s, "last_price", None)
     if price and price > 0:
         whole_shares = math.floor(target_dollars / price)
+        if s.direction.upper() == "LONG":
+            tp_price = round(price * (1.0 + abs_tp_dist), 4)
+            sl_price = round(price * (1.0 - eff_stop), 4)
+        else:
+            tp_price = round(price * (1.0 - abs_tp_dist), 4)
+            sl_price = round(price * (1.0 + eff_stop), 4)
     else:
         whole_shares = 0
+        tp_price = sl_price = None
 
     return {
         "ticker": s.ticker,
@@ -195,13 +224,12 @@ def _signal_to_execution_record(s, nav_total: float) -> dict:
         "shock_return_pct": round(s.signal.shock_return * 100, 3),
         "shock_score": round(s.signal.shock_score, 4),
         "shock_age_days": s.signal.shock_age_days,
-        # Exit levels (as % distances from fill price — apply at execution)
-        "take_profit_distance_pct": round(abs_alpha * 100, 3),   # α=0 fair value
-        "stop_loss_distance_pct": None,   # filled from config at OMS level
-        "exit_logic": {
-            "take_profit": f"LONG: fill × (1 + {abs_alpha:.3%}) | SHORT: fill × (1 - {abs_alpha:.3%})",
-            "stop_loss":   "fill × (1 ± stop_loss_pct) — set from risk config",
-        },
+        # ── Exit levels ────────────────────────────────────────────────────
+        "take_profit_price": tp_price,
+        "take_profit_distance_pct": round(abs_tp_dist * 100, 3),
+        "stop_loss_price": sl_price,
+        "stop_loss_distance_pct": round(eff_stop * 100, 3),
+        "stop_loss_vol_adjusted": eff_stop > stop_loss_pct,
     }
 
 
@@ -210,6 +238,10 @@ def export_execution_files(
     base: Path,
     nav_total: float = 10_000.0,
     min_order_notional_usd: float = 100.0,
+    stop_loss_pct: float = 0.03,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
+    tp_alpha_ratio: float = 1.0,
     run_date: Optional[date] = None,
 ) -> None:
     """
@@ -233,7 +265,9 @@ def export_execution_files(
     for commodity, signals in by_commodity.items():
         ibkr_records = []
         for s in signals:
-            rec = _signal_to_execution_record(s, nav_total)
+            rec = _signal_to_execution_record(
+                s, nav_total, stop_loss_pct, atr_multiplier, max_atr_stop, tp_alpha_ratio
+            )
             target_dollars = nav_total * s.position_size_pct
             # Route to execution file only if ≥ 1 whole share AND notional ≥ min
             if rec["whole_shares"] >= 1 and target_dollars >= min_order_notional_usd:
@@ -262,38 +296,45 @@ def export_execution_files(
 
 # ── manual_orders_{date}.json / .csv ─────────────────────────────────────────
 
-def _bracket_order(s, nav_total: float, stop_loss_pct: float) -> dict:
+def _bracket_order(
+    s,
+    nav_total: float,
+    stop_loss_pct: float,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
+    tp_alpha_ratio: float = 1.0,
+) -> dict:
     """
     Build a complete IBKR bracket-order record for manual placement.
 
     Structure:
-      Parent LMT  — entry at last known price (user adjusts before placing)
-      Take Profit LMT leg — at α=0 fair value
-      Stop Loss   STP leg — at entry × (1 ∓ stop_loss_pct)
+      Parent LMT     — entry at last known price (review before placing)
+      Take Profit LMT — at last_price × (1 ± |alpha| × tp_ratio)
+      Stop Loss STP   — at last_price × (1 ∓ eff_stop)  [vol-adjusted]
 
-    Because we don't have a guaranteed fill price, all prices are computed from
-    `last_price` (last market close).  The user should review / adjust before
-    sending to IBKR.
+    TP target is at tp_alpha_ratio (default 85%) of theoretical alpha to
+    improve fill rate vs. waiting for full theoretical target.
+    SL is vol-adjusted per stock: wider for high-vol, tighter for low-vol.
     """
-    abs_alpha = abs(s.alpha)
-    direction = s.direction.upper()          # "LONG" | "SHORT"
-    price = getattr(s, "last_price", None) or 0.0
+    abs_alpha  = abs(s.alpha)
+    abs_tp_dist = abs_alpha * tp_alpha_ratio
+    eff_stop   = _vol_adjusted_sl(s, stop_loss_pct, atr_multiplier, max_atr_stop)
+    direction  = s.direction.upper()
+    price      = getattr(s, "last_price", None) or 0.0
 
     target_dollars = nav_total * s.position_size_pct
-    whole_shares = math.floor(target_dollars / price) if price > 0 else 0
-    # Even if whole_shares == 0 we still output the record so the user can
-    # decide whether to round up to 1 share manually.
+    whole_shares   = math.floor(target_dollars / price) if price > 0 else 0
 
     if direction == "LONG":
-        action = "BUY"
-        tp_price = round(price * (1 + abs_alpha), 4) if price else None
-        sl_price = round(price * (1 - stop_loss_pct), 4) if price else None
+        action    = "BUY"
+        tp_price  = round(price * (1 + abs_tp_dist), 4) if price else None
+        sl_price  = round(price * (1 - eff_stop), 4) if price else None
         tp_action = "SELL"
         sl_action = "SELL"
     else:  # SHORT
-        action = "SELL SHORT"
-        tp_price = round(price * (1 - abs_alpha), 4) if price else None
-        sl_price = round(price * (1 + stop_loss_pct), 4) if price else None
+        action    = "SELL SHORT"
+        tp_price  = round(price * (1 - abs_tp_dist), 4) if price else None
+        sl_price  = round(price * (1 + eff_stop), 4) if price else None
         tp_action = "BUY"
         sl_action = "BUY"
 
@@ -312,7 +353,7 @@ def _bracket_order(s, nav_total: float, stop_loss_pct: float) -> dict:
         # ── IBKR bracket order legs ──────────────────────────────────────────
         "parent_order": {
             "action": action,
-            "quantity": max(whole_shares, 1),   # floor at 1 for user reference
+            "quantity": max(whole_shares, 1),
             "order_type": "LMT",
             "limit_price": round(price, 4) if price else None,
             "note": "Adjust limit_price to desired entry before placing",
@@ -322,14 +363,15 @@ def _bracket_order(s, nav_total: float, stop_loss_pct: float) -> dict:
             "quantity": max(whole_shares, 1),
             "order_type": "LMT",
             "limit_price": tp_price,
-            "distance_pct": round(abs_alpha * 100, 3),
+            "distance_pct": round(abs_tp_dist * 100, 3),
         },
         "stop_loss_leg": {
             "action": sl_action,
             "quantity": max(whole_shares, 1),
             "order_type": "STP",
             "stop_price": sl_price,
-            "distance_pct": round(stop_loss_pct * 100, 3),
+            "distance_pct": round(eff_stop * 100, 3),
+            "vol_adjusted": eff_stop > stop_loss_pct,
         },
     }
 
@@ -338,7 +380,10 @@ def export_manual_orders(
     live_signals,               # List[ScoredSignal]
     base: Path,
     nav_total: float = 10_000.0,
-    stop_loss_pct: float = 0.05,
+    stop_loss_pct: float = 0.03,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
+    tp_alpha_ratio: float = 1.0,
     run_date: Optional[date] = None,
 ) -> None:
     """
@@ -360,7 +405,10 @@ def export_manual_orders(
     live_dir = base / "live"
     live_dir.mkdir(exist_ok=True)
 
-    orders = [_bracket_order(s, nav_total, stop_loss_pct) for s in live_signals]
+    orders = [
+        _bracket_order(s, nav_total, stop_loss_pct, atr_multiplier, max_atr_stop, tp_alpha_ratio)
+        for s in live_signals
+    ]
 
     # ── JSON ─────────────────────────────────────────────────────────────────
     payload = {
@@ -406,6 +454,7 @@ def export_manual_orders(
             "sl_action": o["stop_loss_leg"]["action"],
             "sl_stop_price": o["stop_loss_leg"]["stop_price"],
             "sl_distance_pct": o["stop_loss_leg"]["distance_pct"],
+            "sl_vol_adjusted": o["stop_loss_leg"]["vol_adjusted"],
         })
 
     pd.DataFrame(rows).to_csv(
@@ -427,7 +476,10 @@ def export_all(
     live_signals,
     base: Path,
     nav_total: float = 10_000.0,
-    stop_loss_pct: float = 0.05,
+    stop_loss_pct: float = 0.03,
+    atr_multiplier: float = 2.0,
+    max_atr_stop: float = 0.12,
+    tp_alpha_ratio: float = 1.0,
     min_order_notional_usd: float = 100.0,
 ) -> None:
     """Run all exporters in one call."""
@@ -439,10 +491,17 @@ def export_all(
         live_signals, base,
         nav_total=nav_total,
         min_order_notional_usd=min_order_notional_usd,
+        stop_loss_pct=stop_loss_pct,
+        atr_multiplier=atr_multiplier,
+        max_atr_stop=max_atr_stop,
+        tp_alpha_ratio=tp_alpha_ratio,
     )
     export_manual_orders(
         live_signals, base,
         nav_total=nav_total,
         stop_loss_pct=stop_loss_pct,
+        atr_multiplier=atr_multiplier,
+        max_atr_stop=max_atr_stop,
+        tp_alpha_ratio=tp_alpha_ratio,
     )
     print(f"  [export] All files written to {base}/")

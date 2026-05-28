@@ -204,10 +204,15 @@ def build_reports(
     if run_live:
         log("        Running live signal scan...")
         live_result = strategy.run(verbose=False)
+        risk_cfg = cfg.get("risk", {})
         export_execution_files(
             live_signals=live_result.scored_signals,
             base=base,
             run_date=date.today(),
+            stop_loss_pct=risk_cfg.get("stop_loss_pct", 0.03),
+            atr_multiplier=risk_cfg.get("atr_stop_multiplier", 2.0),
+            max_atr_stop=risk_cfg.get("max_atr_stop_pct", 0.12),
+            tp_alpha_ratio=risk_cfg.get("tp_alpha_ratio", 1.0),
         )
         log(f"        execution_*_{date.today()}.json ✓ ({len(live_result.scored_signals)} signals)")
 

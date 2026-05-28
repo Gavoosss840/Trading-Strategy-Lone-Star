@@ -282,7 +282,11 @@ risk:
     high_conviction_score_threshold: 0.70  # Shock score ≥ 0.70 → bypass dynamic cap
 
   # ── Exit rules ─────────────────────────────────
-  stop_loss_pct: 0.03             # ↓ 3% (from 4%) — cut losers 25% faster
+  stop_loss_pct: 0.03             # Base SL: 3% — vol-adjusted SL overrides this per stock
+  tp_alpha_ratio: 0.85            # TP at 85% of theoretical alpha — more realistic fill rate
+  trail_stop_activation_pct: 0.40 # Move SL to breakeven after reaching 40% toward TP
+  trail_stop_buffer_pct: 0.005    # Breakeven SL = entry × (1 + 0.5%) — small buffer
+  max_portfolio_heat: 0.80        # Pause new entries when total open exposure ≥ 80% NAV
 
   # ── CML + risk-parity sizing parameters ──────
   # Position size = base_size × boost × composite_score

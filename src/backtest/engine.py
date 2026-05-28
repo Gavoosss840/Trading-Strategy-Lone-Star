@@ -499,11 +499,13 @@ def _rebalance_portfolio(
                     eff_stop = max(stop_loss_pct, min(atr_multiplier * dv, max_atr_stop))
 
         # Trailing TP/SL reset from current price
+        _tp_ratio = risk_cfg.get("tp_alpha_ratio", 1.0)
+        abs_tp    = abs_alpha * _tp_ratio
         if trade.direction == "LONG":
-            new_tp = current_price * (1.0 + abs_alpha)
+            new_tp = current_price * (1.0 + abs_tp)
             new_sl = current_price * (1.0 - eff_stop)
         else:
-            new_tp = current_price * (1.0 - abs_alpha)
+            new_tp = current_price * (1.0 - abs_tp)
             new_sl = current_price * (1.0 + eff_stop)
 
         trade.size               = new_size
@@ -529,10 +531,14 @@ class Portfolio:
         stop_loss_pct: float,
         max_holding: int,
         slippage_pct: float = 0.0,
+        trail_activation_pct: float = 0.0,
+        trail_buffer_pct: float = 0.005,
     ) -> None:
-        self.stop_loss_pct = stop_loss_pct
-        self.max_holding   = max_holding
-        self.slippage_pct  = slippage_pct
+        self.stop_loss_pct        = stop_loss_pct
+        self.max_holding          = max_holding
+        self.slippage_pct         = slippage_pct
+        self.trail_activation_pct = trail_activation_pct
+        self.trail_buffer_pct     = trail_buffer_pct
         self.open_trades:   List[Trade] = []
         self.closed_trades: List[Trade] = []
 
@@ -569,6 +575,25 @@ class Portfolio:
 
             current_price = prices[trade.ticker]
             days_held = (current_date - trade.entry_date).days
+
+            # ── Trailing stop activation ───────────────────────────────────
+            # Once price moves trail_activation_pct of the way toward TP,
+            # lock in breakeven + small buffer so profit can't fully reverse.
+            if self.trail_activation_pct > 0 and trade.take_profit_price is not None:
+                if trade.direction == "LONG":
+                    full_move = trade.take_profit_price - trade.entry_price
+                    cur_move  = current_price - trade.entry_price
+                    if full_move > 0 and cur_move >= self.trail_activation_pct * full_move:
+                        trail_sl = trade.entry_price * (1.0 + self.trail_buffer_pct)
+                        if trade.stop_loss_price is None or trail_sl > trade.stop_loss_price:
+                            trade.stop_loss_price = trail_sl
+                else:  # SHORT
+                    full_move = trade.entry_price - trade.take_profit_price
+                    cur_move  = trade.entry_price - current_price
+                    if full_move > 0 and cur_move >= self.trail_activation_pct * full_move:
+                        trail_sl = trade.entry_price * (1.0 - self.trail_buffer_pct)
+                        if trade.stop_loss_price is None or trail_sl < trade.stop_loss_price:
+                            trade.stop_loss_price = trail_sl
 
             # Exit checks
             hit_stop = hit_tp = False
@@ -714,6 +739,12 @@ def run_backtest(
     # ── Sharpe-weighted allocation ────────────────────────────────────────
     sharpe_floor_mult = risk_cfg.get("sharpe_weight_floor", 0.25)
     sharpe_cap_mult   = risk_cfg.get("sharpe_weight_cap", 2.0)
+
+    # ── Order quality: TP ratio, trailing stop, portfolio heat ───────────
+    tp_alpha_ratio     = risk_cfg.get("tp_alpha_ratio", 1.0)
+    trail_activation   = risk_cfg.get("trail_stop_activation_pct", 0.0)
+    trail_buffer       = risk_cfg.get("trail_stop_buffer_pct", 0.005)
+    max_portfolio_heat = risk_cfg.get("max_portfolio_heat", 0.0)   # 0 = disabled
 
     # ── Dynamic opportunity / risk allocation ─────────────────────────────
     dyn_cfg         = risk_cfg.get("dynamic_allocation", {})
@@ -869,7 +900,11 @@ def run_backtest(
         c: deque(maxlen=dyn_opp_window) for c in commodities
     }
 
-    portfolio  = Portfolio(stop_loss, max_hold, slippage_pct)
+    portfolio  = Portfolio(
+        stop_loss, max_hold, slippage_pct,
+        trail_activation_pct=trail_activation,
+        trail_buffer_pct=trail_buffer,
+    )
     all_cols   = commodities + ["combined"]
     pnl_rows: List[dict] = []
 
@@ -963,6 +998,13 @@ def run_backtest(
         risk_off_today = bool(regime_risk_off.get(t, False)) or circuit_break_today
         if i % step_days == 0 and not risk_off_today:
             for commod in commodities:
+                # Portfolio heat cap: stop opening new positions across all
+                # commodities once total open exposure reaches the limit.
+                if max_portfolio_heat > 0:
+                    _cur_heat = sum(tr.size for tr in portfolio.open_trades)
+                    if _cur_heat >= max_portfolio_heat:
+                        break
+
                 c_series = commodity_returns.loc[:t][commod].dropna()
                 if len(c_series) < vol_window + max_accum + 2:
                     continue
@@ -1124,12 +1166,13 @@ def run_backtest(
                         else raw_price * (1.0 - slippage_pct)
                     )
                     abs_alpha = abs(cand["alpha"])
+                    abs_tp    = abs_alpha * tp_alpha_ratio  # conservative target
 
                     if direction == "LONG":
-                        tp_price = entry_price * (1.0 + abs_alpha)
+                        tp_price = entry_price * (1.0 + abs_tp)
                         sl_price = entry_price * (1.0 - eff_stop)
                     else:
-                        tp_price = entry_price * (1.0 - abs_alpha)
+                        tp_price = entry_price * (1.0 - abs_tp)
                         sl_price = entry_price * (1.0 + eff_stop)
 
                     trade = Trade(
