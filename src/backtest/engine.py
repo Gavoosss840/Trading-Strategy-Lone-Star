@@ -385,12 +385,15 @@ def _rebalance_portfolio(
     Close conditions (in order):
       1. No price data
       2. Shock faded (amp < min_amp or z < min_z)
-      3. Original shock too old (> 2×max_age calendar days)
-      4. Direction reversed
-      5. Alpha below threshold
-      6. Already fully priced
+      3. Direction reversed
+      4. Alpha below threshold
+      5. Already fully priced
 
     Otherwise: resize + reset trailing TP/SL from current price.
+
+    Returns the set of (ticker, commodity) pairs that were CLOSED so the
+    caller can block same-day signal generation for those pairs and avoid
+    the implicit close+reopen anti-pattern.
     """
     max_pos     = risk_cfg.get("max_position_pct", 0.05)
     min_pos     = risk_cfg.get("min_position_pct", 0.005)
@@ -398,7 +401,8 @@ def _rebalance_portfolio(
     ref_sr      = risk_cfg.get("reference_sharpe", 0.50)
     max_boost   = risk_cfg.get("max_signal_boost", 2.0)
 
-    still_open: List[Trade] = []
+    still_open:   List[Trade] = []
+    closed_today: set         = set()   # (ticker, commodity) pairs closed this rebalance
 
     for trade in portfolio.open_trades:
         # 1. No price
@@ -425,6 +429,7 @@ def _rebalance_portfolio(
         if shock_amp < min_amp:
             trade.close(current_date, current_price, "rebalance_shock_faded", slippage_pct)
             portfolio.closed_trades.append(trade)
+            closed_today.add((trade.ticker, trade.commodity))
             continue
 
         vol_today = (
@@ -438,6 +443,7 @@ def _rebalance_portfolio(
         if shock_z < min_z:
             trade.close(current_date, current_price, "rebalance_shock_faded", slippage_pct)
             portfolio.closed_trades.append(trade)
+            closed_today.add((trade.ticker, trade.commodity))
             continue
 
         # Residuals accumulated since entry
@@ -460,18 +466,21 @@ def _rebalance_portfolio(
         if new_dir != trade.direction:
             trade.close(current_date, current_price, "rebalance_direction_reversed", slippage_pct)
             portfolio.closed_trades.append(trade)
+            closed_today.add((trade.ticker, trade.commodity))
             continue
 
         # 5. Alpha too small
         if abs_alpha < min_alpha:
             trade.close(current_date, current_price, "rebalance_alpha_expired", slippage_pct)
             portfolio.closed_trades.append(trade)
+            closed_today.add((trade.ticker, trade.commodity))
             continue
 
         # 6. Already priced
         if expected != 0 and abs(actual_reaction / expected) >= ar_ratio:
             trade.close(current_date, current_price, "rebalance_already_priced", slippage_pct)
             portfolio.closed_trades.append(trade)
+            closed_today.add((trade.ticker, trade.commodity))
             continue
 
         # ── Resize in-place ───────────────────────────────────────────────
@@ -519,6 +528,7 @@ def _rebalance_portfolio(
         still_open.append(trade)
 
     portfolio.open_trades = still_open
+    return closed_today
 
 
 # ── Portfolio ─────────────────────────────────────────────────────────────────
@@ -959,8 +969,9 @@ def run_backtest(
                         eff_commod_exp[_c] = min(eff_commod_exp[_c], _cap)
 
         # ── 1. Rebalance open positions ───────────────────────────────────
+        rebalanced_closed: set = set()
         if i > 0 and i % rebal_freq == 0 and portfolio.open_trades:
-            _rebalance_portfolio(
+            rebalanced_closed = _rebalance_portfolio(
                 portfolio      = portfolio,
                 current_date   = t,
                 prices         = prices_today,
@@ -1055,6 +1066,11 @@ def run_backtest(
                 max_boost_v = risk_cfg.get("max_signal_boost", 2.0)
 
                 for ticker in stocks_available:
+
+                    # Block same-day reopen: this (ticker, commodity) was just
+                    # closed at rebalancing — prevent implicit close+reopen.
+                    if (ticker, commod) in rebalanced_closed:
+                        continue
 
                     # ADV liquidity filter
                     if rolling_adv is not None and min_adv_usd > 0:

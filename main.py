@@ -64,6 +64,16 @@ def parse_args() -> argparse.Namespace:
         help="Export signals to a CSV file",
     )
     parser.add_argument(
+        "--positions",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Path to open positions CSV/JSON (ticker,commodity,direction,shares,entry_price). "
+            "Generates rebalance_orders_{date}.json with BUY/SELL/CLOSE delta orders — "
+            "never close+reopen. Run without --positions first to get a template."
+        ),
+    )
+    parser.add_argument(
         "--report",
         action="store_true",
         help="Run full backtest and generate report.png + all output files",
@@ -196,6 +206,39 @@ def main() -> int:
         out_path = Path(args.export)
         df.to_csv(out_path, index=False)
         print(f"  Signals exported to: {out_path}")
+
+    # ── Rebalance orders (delta orders vs existing positions) ──────────────────
+    if args.positions:
+        try:
+            from src.reporting.rebalancer import export_rebalance_orders
+            import yaml as _yaml
+            with open(config_path) as _f:
+                _cfg = _yaml.safe_load(_f)
+            _risk = _cfg.get("risk", {})
+            _exec = _cfg.get("execution", {})
+            output_dir = Path(args.output)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            export_rebalance_orders(
+                live_signals=result.scored_signals,
+                open_positions_path=args.positions,
+                base=output_dir,
+                nav_total=float(_exec.get("nav_total", 10_000)),
+                stop_loss_pct=float(_risk.get("stop_loss_pct", 0.03)),
+                atr_multiplier=float(_risk.get("atr_stop_multiplier", 2.0)),
+                max_atr_stop=float(_risk.get("max_atr_stop_pct", 0.12)),
+                tp_alpha_ratio=float(_risk.get("tp_alpha_ratio", 1.0)),
+            )
+        except Exception as exc:
+            print(f"  Rebalance error: {exc}", file=sys.stderr)
+    else:
+        # Write positions template so user can fill it in before next rebalance
+        try:
+            from src.reporting.rebalancer import write_positions_template
+            tmpl = write_positions_template(Path(args.output))
+            if not args.quiet:
+                print(f"  [template] {tmpl}  ← fill with your IBKR positions, then: --positions {tmpl}")
+        except Exception:
+            pass
 
     # ── Warnings ───────────────────────────────────────────────────────────────
     if result.warnings:
