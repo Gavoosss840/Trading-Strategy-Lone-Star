@@ -370,6 +370,34 @@ execution:
   # 10 bps / 2 = 5 bps per leg (conservative estimate for liquid mid/large-caps).
   transaction_cost_bps: 10
 
+# ── Interactive Brokers TWS / IB Gateway ──────
+#
+# Paper trading ports  (requires API enabled in TWS settings):
+#   TWS:        7497   (default for paper — used when mode: paper)
+#   IB Gateway: 4002
+#
+# Live trading ports:
+#   TWS:        7496   (used when mode: live)
+#   IB Gateway: 4001
+#
+# To enable the API in TWS:
+#   Edit → Global Configuration → API → Settings
+#   ✓ Enable ActiveX and Socket Clients
+#   ✓ Allow connections from localhost only (127.0.0.1)
+#   Socket port: 7497 (paper) or 7496 (live)
+#
+# Switch between paper and live by changing mode below OR by passing
+# --ibkr-mode live on the CLI (no config edit needed).
+ibkr:
+  host:      "127.0.0.1"
+  mode:      "paper"          # paper | live   (change to live when ready)
+  # port is auto-selected from mode: paper→7497, live→7496
+  # Override here only if you use IB Gateway instead of TWS:
+  # port: 4002                # IB Gateway paper
+  # port: 4001                # IB Gateway live
+  client_id:  1               # Unique client ID — increment if multiple algo sessions
+  timeout_sec: 30             # Connection timeout in seconds
+
 # ── Output ────────────────────────────────────
 output:
   top_n_signals: 10

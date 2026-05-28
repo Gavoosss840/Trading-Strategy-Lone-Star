@@ -123,6 +123,40 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print detected commodity shocks",
     )
+
+    # ── IBKR live order routing ──────────────────────────────────────────────
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "Route live signals directly to IBKR TWS/Gateway as bracket orders "
+            "(parent LMT + TP LMT + SL STP). Requires TWS or IB Gateway to be "
+            "running with API enabled. Without this flag the strategy only "
+            "generates files (execution JSON + manual_orders CSV)."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Compute and print all orders that WOULD be sent to IBKR without "
+            "actually connecting. Useful to preview routing decisions before "
+            "enabling --live. Fractional/insufficient-funds signals go to the "
+            "manual list as usual."
+        ),
+    )
+    parser.add_argument(
+        "--ibkr-mode",
+        choices=["paper", "live"],
+        default=None,
+        metavar="paper|live",
+        help=(
+            "Override ibkr.mode from config.yaml. "
+            "paper = port 7497 (TWS paper) | live = port 7496 (TWS live). "
+            "Example: --live --ibkr-mode live"
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -239,6 +273,38 @@ def main() -> int:
                 print(f"  [template] {tmpl}  ← fill with your IBKR positions, then: --positions {tmpl}")
         except Exception:
             pass
+
+    # ── IBKR live order routing ────────────────────────────────────────────────
+    if args.live or args.dry_run:
+        try:
+            import yaml as _yaml
+            from src.execution.order_router import route_signals
+            with open(config_path) as _f:
+                _cfg = _yaml.safe_load(_f)
+            ibkr_cfg = _cfg.get("ibkr", {})
+            if not ibkr_cfg:
+                print(
+                    "  Warning: 'ibkr' section not found in config.yaml. "
+                    "Using defaults (host=127.0.0.1, port=7497, mode=paper).",
+                    file=sys.stderr,
+                )
+            route_signals(
+                live_signals        = result.scored_signals,
+                ibkr_cfg            = ibkr_cfg,
+                risk_cfg            = _cfg.get("risk", {}),
+                exec_cfg            = _cfg.get("execution", {}),
+                output_dir          = args.output,
+                ibkr_mode_override  = args.ibkr_mode,
+                dry_run             = args.dry_run and not args.live,
+            )
+        except ImportError as exc:
+            print(f"  IBKR integration unavailable: {exc}", file=sys.stderr)
+            print(
+                "  Install the IBKR library: pip install ib_insync",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(f"  IBKR order routing error: {exc}", file=sys.stderr)
 
     # ── Warnings ───────────────────────────────────────────────────────────────
     if result.warnings:
